@@ -1,0 +1,11 @@
+node_modules/
+dist/
+web/dist/
+.env
+config/servers.local.yml
+data/
+*.db
+*.db-journal
+*.log
+*.tsbuildinfo
+.DS_Store

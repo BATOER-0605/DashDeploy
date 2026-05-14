@@ -1,0 +1,24 @@
+{
+  "name": "dashdeploy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Quickly deploy a GitHub repo to a Proxmox VE LXC/QEMU target via SSH + Docker, then restore a clean snapshot.",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "setup": "npm install",
+    "build": "npm -w web run build && npm -w server run build",
+    "dev": "concurrently -n server,web -c blue,green \"npm -w server run dev\" \"npm -w web run dev\"",
+    "start": "node server/dist/index.js",
+    "migrate": "npm -w server run migrate",
+    "test": "npm -w server run test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

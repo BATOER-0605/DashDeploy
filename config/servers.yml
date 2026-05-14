@@ -1,0 +1,36 @@
+# DashDeploy target inventory (sanitized example).
+# Copy to config/servers.local.yml and fill in real values — the .local.yml file
+# is gitignored and takes precedence when present.
+servers:
+  - name: dev-lxc-101
+    pveNode: pve
+    vmid: 101
+    kind: lxc                 # lxc | qemu
+    baselineSnapshot: clean
+    appPort: 3000             # optional: used for the clickable app link / health check
+    healthPath: /             # optional: path polled for the health-check badge
+    ssh:
+      host: 100.100.0.101     # tailnet IP or hostname
+      port: 22
+      user: root
+      auth: password          # password | key
+      password: changeme      # required when auth = password
+      # privateKeyPath: ~/.ssh/id_ed25519   # required when auth = key
+      # passphrase: ""                       # optional, for an encrypted key
+
+  - name: dev-vm-201
+    pveNode: pve
+    vmid: 201
+    kind: qemu
+    baselineSnapshot: clean
+    appPort: 8080
+    ssh:
+      host: 100.100.0.201
+      port: 22
+      user: ubuntu
+      auth: key
+      privateKeyPath: ~/.ssh/id_ed25519
+
+# Optional: targets kept running in the background so deploys skip the start step.
+warmTargets:
+  - dev-lxc-101
