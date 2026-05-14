@@ -208,6 +208,14 @@ export async function restoreDeployment(
 
   log("system", `restoring ${server.kind} ${server.vmid} to snapshot "${target}"...`);
   try {
+    // Cold restore: power the guest off first, then roll back the snapshot.
+    const status = await pve.getStatus(server.pveNode, server.kind, server.vmid);
+    if (status.status !== "stopped") {
+      log("system", "powering off guest before rollback...");
+      const stopUpid = await pve.stop(server.pveNode, server.kind, server.vmid);
+      await pve.waitForTask(server.pveNode, stopUpid, (s) => log("system", `stop task: ${s}`));
+      log("system", "guest powered off");
+    }
     const upid = await pve.rollback(server.pveNode, server.kind, server.vmid, target);
     await pve.waitForTask(server.pveNode, upid, (s) => log("system", `rollback task: ${s}`));
     updateDeployment(deploymentId, { status: "restored" });

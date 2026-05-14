@@ -3,7 +3,12 @@ import { Agent } from "undici";
 export type GuestKind = "lxc" | "qemu";
 
 export interface PveClientOptions {
-  host: string;
+  /**
+   * One or more PVE node hostnames/IPs. In a cluster, a request to any node is
+   * proxied to the node that owns the guest, so a single host is enough;
+   * additional hosts act as connection failover targets.
+   */
+  hosts: string[];
   port: number;
   tokenId: string;
   tokenSecret: string;
@@ -30,7 +35,7 @@ export interface PveSnapshot {
 export class PveError extends Error {}
 
 export class PveClient {
-  private readonly base: string;
+  private readonly bases: string[];
   private readonly authHeader: string;
   private readonly fetchImpl: typeof fetch;
   private readonly dispatcher?: Agent;
@@ -38,7 +43,10 @@ export class PveClient {
   private readonly taskTimeoutMs: number;
 
   constructor(opts: PveClientOptions) {
-    this.base = `https://${opts.host}:${opts.port}/api2/json`;
+    if (opts.hosts.length === 0) {
+      throw new PveError("PveClient requires at least one host");
+    }
+    this.bases = opts.hosts.map((h) => `https://${h}:${opts.port}/api2/json`);
     this.authHeader = `PVEAPIToken=${opts.tokenId}=${opts.tokenSecret}`;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.pollIntervalMs = opts.pollIntervalMs ?? 1500;
@@ -67,13 +75,30 @@ export class PveClient {
       init.body = form;
       headers["Content-Type"] = "application/x-www-form-urlencoded";
     }
-    const res = await this.fetchImpl(`${this.base}${path}`, init);
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new PveError(`PVE ${method} ${path} failed: ${res.status} ${res.statusText} ${text}`);
+    // Try each configured host in turn. An HTTP error response is final
+    // (the host is reachable, the request is just rejected), but a connection
+    // failure falls through to the next host — cluster failover.
+    let lastError: unknown;
+    for (const base of this.bases) {
+      let res: Response;
+      try {
+        res = await this.fetchImpl(`${base}${path}`, init);
+      } catch (err) {
+        lastError = err;
+        continue;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new PveError(
+          `PVE ${method} ${path} failed: ${res.status} ${res.statusText} ${text}`,
+        );
+      }
+      const json = (await res.json()) as { data: T };
+      return json.data;
     }
-    const json = (await res.json()) as { data: T };
-    return json.data;
+    throw new PveError(
+      `PVE ${method} ${path} failed: no host reachable (tried ${this.bases.length}): ${String(lastError)}`,
+    );
   }
 
   getStatus(node: string, kind: GuestKind, vmid: number): Promise<GuestStatus> {
@@ -82,6 +107,11 @@ export class PveClient {
 
   start(node: string, kind: GuestKind, vmid: number): Promise<string> {
     return this.request<string>("POST", `/nodes/${node}/${kind}/${vmid}/status/start`);
+  }
+
+  /** Power off the guest (hard stop). Used before a cold snapshot rollback. */
+  stop(node: string, kind: GuestKind, vmid: number): Promise<string> {
+    return this.request<string>("POST", `/nodes/${node}/${kind}/${vmid}/status/stop`);
   }
 
   listSnapshots(node: string, kind: GuestKind, vmid: number): Promise<PveSnapshot[]> {

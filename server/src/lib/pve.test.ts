@@ -17,7 +17,7 @@ function json(data: unknown): Response {
 }
 
 const baseOpts = {
-  host: "pve.local",
+  hosts: ["pve.local"],
   port: 8006,
   tokenId: "root@pam!t",
   tokenSecret: "secret",
@@ -96,6 +96,51 @@ test("request throws PveError on HTTP error responses", async () => {
   const client = new PveClient({
     ...baseOpts,
     fetchImpl: mockFetch(() => new Response("nope", { status: 403, statusText: "Forbidden" })),
+  });
+  await assert.rejects(() => client.getStatus("pve", "lxc", 101), PveError);
+});
+
+test("stop posts to the status/stop endpoint", async () => {
+  let seen = "";
+  let method = "";
+  const client = new PveClient({
+    ...baseOpts,
+    fetchImpl: mockFetch((url, init) => {
+      seen = url;
+      method = init?.method ?? "";
+      return json("UPID:pve:stop");
+    }),
+  });
+  await client.stop("pve", "lxc", 101);
+  assert.equal(method, "POST");
+  assert.ok(seen.endsWith("/nodes/pve/lxc/101/status/stop"));
+});
+
+test("falls over to the next host on a connection failure", async () => {
+  const tried: string[] = [];
+  const client = new PveClient({
+    ...baseOpts,
+    hosts: ["dead.local", "alive.local"],
+    fetchImpl: mockFetch((url) => {
+      tried.push(url);
+      if (url.includes("dead.local")) throw new Error("ECONNREFUSED");
+      return json({ status: "running" });
+    }),
+  });
+  const status = await client.getStatus("pve", "qemu", 201);
+  assert.equal(status.status, "running");
+  assert.equal(tried.length, 2);
+  assert.ok(tried[0].includes("dead.local"));
+  assert.ok(tried[1].includes("alive.local"));
+});
+
+test("throws PveError when no host is reachable", async () => {
+  const client = new PveClient({
+    ...baseOpts,
+    hosts: ["a.local", "b.local"],
+    fetchImpl: mockFetch(() => {
+      throw new Error("ECONNREFUSED");
+    }),
   });
   await assert.rejects(() => client.getStatus("pve", "lxc", 101), PveError);
 });
