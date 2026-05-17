@@ -124,6 +124,40 @@ async function pollHealth(url: string, scrub: (l: string) => string, deploymentI
 }
 
 /**
+ * Poll for SSH readiness on the target. Called right after a power-on so the
+ * deploy steps that follow don't fail because the OS is still booting.
+ */
+async function waitForSsh(
+  server: ServerEntry,
+  log: (stream: LogStream, line: string) => void,
+  timeoutMs = 180_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  let lastNoticeAt = 0;
+  for (;;) {
+    attempt++;
+    try {
+      await captureCommand(server, "true");
+      log("system", `SSH ready (attempt ${attempt})`);
+      return;
+    } catch (err) {
+      if (Date.now() > deadline) {
+        throw new Error(
+          `SSH did not become available within ${Math.floor(timeoutMs / 1000)}s: ${(err as Error).message}`,
+        );
+      }
+      const now = Date.now();
+      if (now - lastNoticeAt > 15_000) {
+        lastNoticeAt = now;
+        log("system", `SSH not ready yet, retrying...`);
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
+
+/**
  * Orchestrates a full deployment. Runs detached from the HTTP request;
  * all progress is streamed via logbus and persisted to the deployments row.
  */
@@ -144,17 +178,18 @@ export async function runDeployment(
     const pve = getPveClient();
     const { pveNode, kind, vmid } = server;
 
-    // 1. Ensure the target guest is running.
+    // 1. Ensure the target guest is running, then wait for SSH to come up.
     log("system", `checking ${kind} ${vmid} on node ${pveNode}...`);
     const status = await pve.getStatus(pveNode, kind, vmid);
     if (status.status !== "running") {
       log("system", `guest is ${status.status}; starting...`);
       const upid = await pve.start(pveNode, kind, vmid);
       await pve.waitForTask(pveNode, upid, (s) => log("system", `start task: ${s}`));
-      log("system", "guest started");
+      log("system", "guest started; waiting for SSH...");
     } else {
-      log("system", "guest already running");
+      log("system", "guest already running; verifying SSH...");
     }
+    await waitForSsh(server, log);
 
     // 2. Ensure Docker is installed on the target (idempotent).
     log("system", "ensuring Docker is installed on target...");

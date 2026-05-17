@@ -1,5 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { getDeployment, getEvents, listDeployments } from "../db/deployments.js";
+import {
+  getDeployment,
+  getEvents,
+  listDeployments,
+  pruneInactiveDeployments,
+} from "../db/deployments.js";
 
 export async function historyRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/deployments", async () => {
@@ -14,5 +19,11 @@ export async function historyRoutes(app: FastifyInstance): Promise<void> {
       return { error: "deployment not found" };
     }
     return { deployment, events: getEvents(id) };
+  });
+
+  // Bulk delete: removes deployments whose status is failed/restored/queued.
+  app.post("/api/deployments/prune", async () => {
+    const deleted = pruneInactiveDeployments();
+    return { deleted };
   });
 }

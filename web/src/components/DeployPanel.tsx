@@ -51,7 +51,7 @@ export function DeployPanel({ onFinished }: Props) {
 
   return (
     <section className="card">
-      <h2>New deployment</h2>
+      <h2>新規デプロイ</h2>
       <RepoPicker
         repo={repo}
         branch={branch}
@@ -66,18 +66,18 @@ export function DeployPanel({ onFinished }: Props) {
           checked={takePreSnapshot}
           onChange={(e) => setTakePreSnapshot(e.target.checked)}
         />
-        Take a pre-deploy snapshot
+        デプロイ前にスナップショットを作成する
       </label>
 
       <button className="primary" disabled={!canDeploy} onClick={deploy}>
-        {deploying ? "Deploying…" : "Deploy"}
+        {deploying ? "デプロイ中…" : "デプロイ"}
       </button>
 
       {error && <p className="error">{error}</p>}
 
       {result && (
         <div className={`result result-${result.status}`}>
-          <strong>{result.status.toUpperCase()}</strong>
+          <strong>{statusLabel(result.status)}</strong>
           {result.tailscale_ip && (
             <p>
               Tailscale IP: <code>{result.tailscale_ip}</code>
@@ -85,11 +85,13 @@ export function DeployPanel({ onFinished }: Props) {
           )}
           {result.app_url && (
             <p>
-              App:{" "}
+              アプリ:{" "}
               <a href={result.app_url} target="_blank" rel="noreferrer">
                 {result.app_url}
               </a>{" "}
-              {result.health && <span className={`badge badge-${result.health}`}>{result.health}</span>}
+              {result.health && (
+                <span className={`badge badge-${result.health}`}>{healthLabel(result.health)}</span>
+              )}
             </p>
           )}
           {result.error && <p className="error">{result.error}</p>}
@@ -99,4 +101,22 @@ export function DeployPanel({ onFinished }: Props) {
       <LogViewer lines={lines} />
     </section>
   );
+}
+
+function statusLabel(status: Deployment["status"]): string {
+  switch (status) {
+    case "queued": return "待機中";
+    case "running": return "実行中";
+    case "success": return "成功";
+    case "failed": return "失敗";
+    case "restored": return "復元済み";
+  }
+}
+
+function healthLabel(health: NonNullable<Deployment["health"]>): string {
+  switch (health) {
+    case "healthy": return "正常";
+    case "unhealthy": return "異常";
+    case "unknown": return "不明";
+  }
 }

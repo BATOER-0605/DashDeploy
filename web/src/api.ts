@@ -88,6 +88,12 @@ export const api = {
       }),
     );
   },
+  async pruneHistory(): Promise<number> {
+    const { deleted } = await json<{ deleted: number }>(
+      await fetch("/api/deployments/prune", { method: "POST" }),
+    );
+    return deleted;
+  },
 };
 
 /**

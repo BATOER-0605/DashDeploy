@@ -16,9 +16,9 @@ export function ServerPicker({ serverName, onChange }: Props) {
 
   return (
     <div className="field">
-      <label>Target server</label>
+      <label>デプロイ先サーバ</label>
       <select value={serverName} onChange={(e) => onChange(e.target.value)}>
-        <option value="">— select a target —</option>
+        <option value="">— サーバを選択 —</option>
         {servers.map((s) => (
           <option key={s.name} value={s.name}>
             {s.name} ({s.kind})

@@ -19,7 +19,7 @@ export function App() {
       <header>
         <h1>DashDeploy</h1>
         <p className="muted">
-          Deploy a GitHub repo to a Proxmox VE target, then restore it to a clean snapshot.
+          GitHub リポジトリを自宅 PVE のターゲットへデプロイし、テスト後はスナップショットで復元できます。
         </p>
       </header>
       <DeployPanel onFinished={refresh} />

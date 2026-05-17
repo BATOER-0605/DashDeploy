@@ -85,3 +85,19 @@ export function getEvents(deploymentId: number): DeploymentEvent[] {
     .prepare(`SELECT * FROM deployment_events WHERE deployment_id = ? ORDER BY id ASC`)
     .all(deploymentId) as DeploymentEvent[];
 }
+
+/**
+ * Delete deployments that are no longer "currently active" — `failed`,
+ * `restored`, and `queued`. `success` (app is up on a target) and `running`
+ * (deploy in progress) are preserved. The associated `deployment_events`
+ * rows are removed via ON DELETE CASCADE.
+ */
+export function pruneInactiveDeployments(): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `DELETE FROM deployments WHERE status IN ('failed', 'restored', 'queued')`,
+    )
+    .run();
+  return result.changes;
+}

@@ -37,12 +37,12 @@ export function RepoPicker({ repo, branch, onRepoChange, onBranchChange }: Props
 
   return (
     <div className="field">
-      <label>Repository</label>
+      <label>リポジトリ</label>
       <select
         value={repo?.fullName ?? ""}
         onChange={(e) => onRepoChange(repos.find((r) => r.fullName === e.target.value) ?? null)}
       >
-        <option value="">— select a repository —</option>
+        <option value="">— リポジトリを選択 —</option>
         {repos.map((r) => (
           <option key={r.fullName} value={r.fullName}>
             {r.fullName} {r.private ? "(private)" : ""}
@@ -50,13 +50,13 @@ export function RepoPicker({ repo, branch, onRepoChange, onBranchChange }: Props
         ))}
       </select>
 
-      <label>Branch</label>
+      <label>ブランチ</label>
       <select
         value={branch}
         disabled={!repo || loadingBranches}
         onChange={(e) => onBranchChange(e.target.value)}
       >
-        {loadingBranches && <option>loading…</option>}
+        {loadingBranches && <option>読み込み中…</option>}
         {!loadingBranches &&
           branches.map((b) => (
             <option key={b} value={b}>
