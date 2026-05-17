@@ -254,6 +254,10 @@ export async function restoreDeployment(
     }
     const upid = await pve.rollback(server.pveNode, server.kind, server.vmid, target);
     await pve.waitForTask(server.pveNode, upid, (s) => log("system", `rollback task: ${s}`));
+    log("system", "powering guest back on...");
+    const startUpid = await pve.start(server.pveNode, server.kind, server.vmid);
+    await pve.waitForTask(server.pveNode, startUpid, (s) => log("system", `start task: ${s}`));
+    log("system", "guest powered on");
     updateDeployment(deploymentId, { status: "restored" });
     log("system", `restore complete (snapshot "${target}")`);
     return { snapshot: target };

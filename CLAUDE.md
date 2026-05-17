@@ -79,8 +79,8 @@ config/servers.yml    サニタイズ済みサンプル（実体は servers.loca
 ### 復元（`services/deploy.ts: restoreDeployment`）
 
 コールドスナップショット復元: ゲストが稼働中ならまず `pve.stop()` でパワーオフし、完了を
-待ってから `pve.rollback()` を実行する。対象スナップショットは引数指定がなければ
-`server.baselineSnapshot`（既定 `clean`）。
+待ってから `pve.rollback()` を実行し、その後 `pve.start()` でパワーオンする。対象スナップ
+ショットは引数指定がなければ `server.baselineSnapshot`（既定 `clean`）。
 
 ### SSE のリロード耐性（`routes/deploy.ts: streamLogs`）
 
