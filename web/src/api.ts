@@ -94,7 +94,154 @@ export const api = {
     );
     return deleted;
   },
+
+  // --- settings ---
+  async getEnv(): Promise<{ values: Record<string, string>; keys: string[] }> {
+    return json(await fetch("/api/settings/env"));
+  },
+  async saveEnv(values: Record<string, string>): Promise<void> {
+    await json(
+      await fetch("/api/settings/env", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      }),
+    );
+  },
+  async getServersYaml(): Promise<{ yaml: string; path: string }> {
+    return json(await fetch("/api/settings/servers"));
+  },
+  async saveServersYaml(yaml: string): Promise<void> {
+    await json(
+      await fetch("/api/settings/servers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ yaml }),
+      }),
+    );
+  },
+  async reloadSettings(): Promise<void> {
+    await json(await fetch("/api/settings/reload", { method: "POST" }));
+  },
+
+  // --- tailscale ---
+  async listTailscaleDevices(): Promise<TailscaleDevice[]> {
+    const { devices } = await json<{ devices: TailscaleDevice[] }>(
+      await fetch("/api/tailscale/devices"),
+    );
+    return devices;
+  },
+
+  // --- pve management ---
+  async listPveNodes(): Promise<PveNode[]> {
+    const { nodes } = await json<{ nodes: PveNode[] }>(await fetch("/api/pve/nodes"));
+    return nodes;
+  },
+  async listPveGuests(node: string): Promise<PveGuest[]> {
+    const { guests } = await json<{ guests: PveGuest[] }>(
+      await fetch(`/api/pve/nodes/${node}/guests`),
+    );
+    return guests;
+  },
+  async listPveStorage(node: string, content?: string): Promise<PveStorage[]> {
+    const q = content ? `?content=${encodeURIComponent(content)}` : "";
+    const { storage } = await json<{ storage: PveStorage[] }>(
+      await fetch(`/api/pve/nodes/${node}/storage${q}`),
+    );
+    return storage;
+  },
+  async listPveStorageContent(
+    node: string,
+    storage: string,
+    content?: string,
+  ): Promise<PveStorageVolume[]> {
+    const q = content ? `?content=${encodeURIComponent(content)}` : "";
+    const { content: items } = await json<{ content: PveStorageVolume[] }>(
+      await fetch(`/api/pve/nodes/${node}/storage/${storage}/content${q}`),
+    );
+    return items;
+  },
+  async createLxc(params: CreateLxcParams): Promise<void> {
+    await json(
+      await fetch("/api/pve/lxc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      }),
+    );
+  },
+  async deleteGuest(node: string, kind: "lxc" | "qemu", vmid: number): Promise<void> {
+    await json(
+      await fetch(`/api/pve/guests/${node}/${kind}/${vmid}`, { method: "DELETE" }),
+    );
+  },
+  async updateGuestConfig(
+    node: string,
+    kind: "lxc" | "qemu",
+    vmid: number,
+    body: { cores?: number; memory?: number },
+  ): Promise<void> {
+    await json(
+      await fetch(`/api/pve/guests/${node}/${kind}/${vmid}/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  },
 };
+
+export interface TailscaleDevice {
+  id: string;
+  name: string;
+  hostname: string;
+  addresses: string[];
+  os?: string;
+  online?: boolean;
+}
+
+export interface PveNode {
+  node: string;
+  status: string;
+}
+
+export interface PveGuest {
+  kind: "lxc" | "qemu";
+  vmid: number;
+  name?: string;
+  status: string;
+  cpus?: number;
+  maxmem?: number;
+}
+
+export interface PveStorage {
+  storage: string;
+  content: string;
+  type: string;
+}
+
+export interface PveStorageVolume {
+  volid: string;
+  content: string;
+  size: number;
+}
+
+export interface CreateLxcParams {
+  node: string;
+  vmid: number;
+  ostemplate: string;
+  hostname?: string;
+  cores: number;
+  memory: number;
+  storage: string;
+  diskSize: number;
+  password?: string;
+  sshPublicKey?: string;
+  bridge: string;
+  ipConfig: string;
+  unprivileged: boolean;
+  start: boolean;
+}
 
 /**
  * Subscribe to a deployment's log stream. Returns a cleanup function.

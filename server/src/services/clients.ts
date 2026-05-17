@@ -17,3 +17,8 @@ export function getPveClient(): PveClient {
   });
   return pve;
 }
+
+/** Drop the cached PveClient so the next call rebuilds it with fresh config. */
+export function resetPveClient(): void {
+  pve = null;
+}

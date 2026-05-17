@@ -2,8 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type Deployment } from "./api.js";
 import { DeployPanel } from "./components/DeployPanel.js";
 import { HistoryList } from "./components/HistoryList.js";
+import { SettingsPage } from "./components/SettingsPage.js";
+
+type Page = "home" | "settings";
 
 export function App() {
+  const [page, setPage] = useState<Page>("home");
   const [deployments, setDeployments] = useState<Deployment[]>([]);
 
   const refresh = useCallback(() => {
@@ -11,19 +15,42 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (page === "home") refresh();
+  }, [page, refresh]);
 
   return (
     <main>
       <header>
-        <h1>DashDeploy</h1>
-        <p className="muted">
-          GitHub リポジトリを自宅 PVE のターゲットへデプロイし、テスト後はスナップショットで復元できます。
-        </p>
+        <div className="brand">
+          <h1>DashDeploy</h1>
+          <p className="muted">
+            GitHub リポジトリを自宅 PVE のターゲットへデプロイし、テスト後はスナップショットで復元できます。
+          </p>
+        </div>
+        <nav className="nav">
+          <button
+            className={page === "home" ? "nav-active" : ""}
+            onClick={() => setPage("home")}
+          >
+            ホーム
+          </button>
+          <button
+            className={page === "settings" ? "nav-active" : ""}
+            onClick={() => setPage("settings")}
+          >
+            設定
+          </button>
+        </nav>
       </header>
-      <DeployPanel onFinished={refresh} />
-      <HistoryList deployments={deployments} onChanged={refresh} />
+
+      {page === "home" ? (
+        <>
+          <DeployPanel onFinished={refresh} />
+          <HistoryList deployments={deployments} onChanged={refresh} />
+        </>
+      ) : (
+        <SettingsPage />
+      )}
     </main>
   );
 }

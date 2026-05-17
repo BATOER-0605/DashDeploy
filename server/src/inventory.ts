@@ -93,6 +93,12 @@ export function getInventory(): Inventory {
   return cached;
 }
 
+/** Force the next `getInventory()` call to re-read the YAML file. */
+export function reloadInventory(): Inventory {
+  cached = null;
+  return getInventory();
+}
+
 export function getServer(name: string): ServerEntry {
   const server = getInventory().servers.find((s) => s.name === name);
   if (!server) throw new Error(`Unknown server: ${name}`);

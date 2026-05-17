@@ -124,6 +124,82 @@ async function pollHealth(url: string, scrub: (l: string) => string, deploymentI
 }
 
 /**
+ * Inspect the running containers on the target and return the host ports they
+ * publish. We prefer this over any configured `appPort` because compose files
+ * often map a different host port than the user wrote in the inventory.
+ */
+function parseComposePortsJson(out: string): number[] {
+  if (!out.trim()) return [];
+  const ports = new Set<number>();
+  const tryParse = (s: string): unknown => {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return null;
+    }
+  };
+  let parsed: unknown = tryParse(out);
+  if (parsed === null) {
+    // Older `docker compose ps --format json` emits NDJSON.
+    parsed = out
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map(tryParse)
+      .filter((v) => v !== null);
+  }
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  for (const item of items) {
+    const pubs = (item as { Publishers?: { PublishedPort?: number }[] } | null)?.Publishers ?? [];
+    for (const p of pubs) {
+      if (p?.PublishedPort && p.PublishedPort > 0) ports.add(Number(p.PublishedPort));
+    }
+  }
+  return Array.from(ports).sort((a, b) => a - b);
+}
+
+function parseDockerPsPorts(out: string): number[] {
+  const ports = new Set<number>();
+  const re = /(?:0\.0\.0\.0|\[::\]|127\.0\.0\.1):(\d+)->/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(out)) !== null) ports.add(Number(m[1]));
+  return Array.from(ports).sort((a, b) => a - b);
+}
+
+async function discoverAppPort(
+  server: ServerEntry,
+  log: (stream: LogStream, line: string) => void,
+): Promise<number | null> {
+  // Try `docker compose ps --format json` first (most accurate for compose projects).
+  const composeScript = [
+    SUDO_PRELUDE,
+    `cd ${APP_DIR} 2>/dev/null && $SUDO docker compose ps --format json 2>/dev/null || true`,
+  ].join("\n");
+  try {
+    const out = await captureCommand(server, composeScript);
+    const ports = parseComposePortsJson(out);
+    if (ports.length > 0) {
+      log("system", `discovered published port(s): ${ports.join(", ")}`);
+      return ports[0];
+    }
+  } catch {
+    /* fall through */
+  }
+  // Fallback: parse `docker ps` for any host-mapped port.
+  const psScript = [SUDO_PRELUDE, "$SUDO docker ps --format '{{.Ports}}'"].join("\n");
+  try {
+    const out = await captureCommand(server, psScript);
+    const ports = parseDockerPsPorts(out);
+    if (ports.length > 0) {
+      log("system", `discovered published port(s): ${ports.join(", ")}`);
+      return ports[0];
+    }
+  } catch {
+    /* nothing else to try */
+  }
+  return null;
+}
+
+/**
  * Poll for SSH readiness on the target. Called right after a power-on so the
  * deploy steps that follow don't fail because the OS is still booting.
  */
@@ -233,8 +309,11 @@ export async function runDeployment(
       log("stderr", `could not get Tailscale IP: ${(err as Error).message}`);
     }
 
-    // 7. Compute the app URL and run a health check.
-    const appPort = ddf.appPort ?? server.appPort ?? null;
+    // 7. Discover the actually published container port; this overrides any
+    //    `appPort` from the inventory/.dashdeploy.yml so the displayed URL
+    //    matches what `docker ps` shows.
+    const discoveredPort = await discoverAppPort(server, log);
+    const appPort = discoveredPort ?? ddf.appPort ?? server.appPort ?? null;
     const healthPath = ddf.healthPath ?? server.healthPath ?? "/";
     let appUrl: string | null = null;
     let health: Deployment["health"] = "unknown";

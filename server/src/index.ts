@@ -12,6 +12,9 @@ import { deployRoutes } from "./routes/deploy.js";
 import { restoreRoutes } from "./routes/restore.js";
 import { historyRoutes } from "./routes/history.js";
 import { healthRoutes } from "./routes/health.js";
+import { settingsRoutes } from "./routes/settings.js";
+import { tailscaleRoutes } from "./routes/tailscale.js";
+import { pveRoutes } from "./routes/pve.js";
 
 async function main(): Promise<void> {
   const cfg = getConfig();
@@ -28,6 +31,9 @@ async function main(): Promise<void> {
   await app.register(restoreRoutes);
   await app.register(historyRoutes);
   await app.register(healthRoutes);
+  await app.register(settingsRoutes);
+  await app.register(tailscaleRoutes);
+  await app.register(pveRoutes);
 
   // Serve the built SPA in production. In dev the frontend runs under Vite.
   const webDist = resolve("web/dist");

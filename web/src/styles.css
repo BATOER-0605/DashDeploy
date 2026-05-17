@@ -15,8 +15,75 @@ main {
   padding: 1.5rem 1rem 4rem;
 }
 
+header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
 header h1 {
   margin: 0;
+}
+
+.brand {
+  flex: 1 1 auto;
+}
+
+.nav {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.nav button {
+  padding: 0.45rem 0.9rem;
+}
+
+.nav .nav-active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.yaml-editor {
+  width: 100%;
+  min-height: 360px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  background: #0b0d11;
+  color: #e6e6e6;
+  border: 1px solid #2f3542;
+  border-radius: 6px;
+  padding: 0.6rem;
+  resize: vertical;
+}
+
+input[type="text"],
+input[type="number"],
+input[type="password"],
+textarea {
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #2f3542;
+  background: #11141a;
+  color: #e6e6e6;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+details.card-inner {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid #2f3542;
+  border-radius: 8px;
+  background: #11141a;
+}
+
+details.card-inner summary {
+  cursor: pointer;
+  margin-bottom: 0.5rem;
 }
 
 .muted {

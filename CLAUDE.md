@@ -56,9 +56,16 @@ server/src/
     deploy.ts         デプロイ／復元のオーケストレーション（中核）
   routes/
     repos.ts servers.ts deploy.ts restore.ts history.ts health.ts
+    settings.ts       .env / servers.local.yml の CRUD + リロード
+    tailscale.ts      Tailscale API 経由のデバイス一覧
+    pve.ts            ノード/ゲスト/ストレージ列挙、LXC 作成/削除/設定変更
+  lib/
+    tailscale.ts      Tailscale REST API クライアント
 web/src/
-  App.tsx api.ts
+  App.tsx api.ts      ホーム/設定ページのナビゲーション
   components/         RepoPicker / ServerPicker / DeployPanel / LogViewer / HistoryList
+                      SettingsPage / EnvEditor / ServersEditor /
+                      TailscalePanel / PveManager
 config/servers.yml    サニタイズ済みサンプル（実体は servers.local.yml を gitignore）
 ```
 
@@ -86,6 +93,20 @@ config/servers.yml    サニタイズ済みサンプル（実体は servers.loca
 
 接続時にまず `deployment_events` を再生し、その後 `logbus` の live イベントを購読する。
 取りこぼし防止のため購読を先に行い、`LogLine.id` で再生済み行をスキップして重複を防ぐ。
+
+### ポート自動検出（`services/deploy.ts: discoverAppPort`）
+
+`docker compose up -d` のあと、`docker compose ps --format json`（フォールバックは
+`docker ps`）でターゲット上の実公開ポートを検出する。インベントリ／`.dashdeploy.yml`
+の `appPort` よりも検出値を優先する（compose 側の `ports:` マッピングと食い違って
+404 になるのを防ぐため）。
+
+### 設定リロード（`routes/settings.ts: POST /api/settings/reload`）
+
+`reloadConfig()`（`config.ts`、`dotenv` を `override:true` で再読込）、
+`resetPveClient()`（`services/clients.ts`）、`reloadInventory()`（`inventory.ts`）の
+3 つを呼び、`.env` と `servers.local.yml` の変更をプロセス再起動なしで反映する。
+`BIND_HOST` と `PORT` だけは Fastify の listen 後に変えられないため再起動が必要。
 
 ## 設計上の決定事項・注意点
 

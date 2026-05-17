@@ -145,6 +145,83 @@ export class PveClient {
     return this.request("GET", `/nodes/${node}/tasks/${encodeURIComponent(upid)}/status`);
   }
 
+  // --- Cluster / node inventory ---
+
+  listNodes(): Promise<{ node: string; status: string }[]> {
+    return this.request("GET", `/nodes`);
+  }
+
+  async listGuests(node: string): Promise<
+    {
+      kind: GuestKind;
+      vmid: number;
+      name?: string;
+      status: string;
+      cpus?: number;
+      maxmem?: number;
+    }[]
+  > {
+    const [lxc, qemu] = await Promise.all([
+      this.request<Record<string, unknown>[]>("GET", `/nodes/${node}/lxc`),
+      this.request<Record<string, unknown>[]>("GET", `/nodes/${node}/qemu`),
+    ]);
+    const mapRow = (kind: GuestKind) => (g: Record<string, unknown>) => ({
+      kind,
+      vmid: Number(g.vmid),
+      name: (g.name as string | undefined) ?? (g.hostname as string | undefined),
+      status: String(g.status ?? ""),
+      cpus: g.cpus as number | undefined,
+      maxmem: g.maxmem as number | undefined,
+    });
+    return [...lxc.map(mapRow("lxc")), ...qemu.map(mapRow("qemu"))].sort(
+      (a, b) => a.vmid - b.vmid,
+    );
+  }
+
+  listStorage(
+    node: string,
+    content?: string,
+  ): Promise<{ storage: string; content: string; type: string }[]> {
+    const query = content ? `?content=${encodeURIComponent(content)}` : "";
+    return this.request("GET", `/nodes/${node}/storage${query}`);
+  }
+
+  listStorageContent(
+    node: string,
+    storage: string,
+    content?: string,
+  ): Promise<{ volid: string; content: string; size: number }[]> {
+    const query = content ? `?content=${encodeURIComponent(content)}` : "";
+    return this.request(
+      "GET",
+      `/nodes/${node}/storage/${encodeURIComponent(storage)}/content${query}`,
+    );
+  }
+
+  // --- Mutations ---
+
+  createLxc(
+    node: string,
+    params: Record<string, string | number>,
+  ): Promise<string> {
+    return this.request<string>("POST", `/nodes/${node}/lxc`, params);
+  }
+
+  deleteGuest(node: string, kind: GuestKind, vmid: number): Promise<string> {
+    return this.request<string>("DELETE", `/nodes/${node}/${kind}/${vmid}`);
+  }
+
+  updateGuestConfig(
+    node: string,
+    kind: GuestKind,
+    vmid: number,
+    config: Record<string, string | number>,
+  ): Promise<void> {
+    // PUT for lxc, POST for qemu config.
+    const method = kind === "qemu" ? "POST" : "PUT";
+    return this.request<void>(method, `/nodes/${node}/${kind}/${vmid}/config`, config);
+  }
+
   /**
    * Poll a PVE task (identified by UPID) until it finishes.
    * Throws PveError if the task exits with a non-OK status or times out.

@@ -17,6 +17,8 @@ const schema = z.object({
   PVE_TLS_REJECT_UNAUTHORIZED: boolish,
   BIND_HOST: z.string().default("0.0.0.0"),
   PORT: z.coerce.number().int().positive().default(3000),
+  TAILSCALE_API_KEY: z.string().optional(),
+  TAILSCALE_TAILNET: z.string().optional(),
   SERVERS_FILE: z.string().optional(),
 });
 
@@ -35,4 +37,11 @@ export function getConfig(): AppConfig {
   }
   cached = parsed.data;
   return cached;
+}
+
+/** Re-read the .env file (overriding existing env vars) and reset the cache. */
+export function reloadConfig(): AppConfig {
+  loadDotenv({ override: true });
+  cached = null;
+  return getConfig();
 }

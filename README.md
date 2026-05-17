@@ -6,6 +6,18 @@ GitHub のリポジトリを自宅の Proxmox VE（PVE）の LXC コンテナ／
 
 「出先で、Claude Code で作ったリポジトリを自宅の実機で手早く試したい」というワークフローのために作られています。
 
+## 設定画面
+
+トップページ右上の **設定** ボタンから、ブラウザ上で以下を編集できます。
+
+- **環境変数** (`.env`): GitHub PAT / PVE トークン / Tailscale API キー など
+- **サーバ台帳** (`config/servers.local.yml`): YAML エディタで直接編集
+- **Tailscale デバイス**: API 経由で一覧を取得し、IP をコピー
+- **PVE VM/CT 管理**: 新規 LXC コンテナの作成、削除、CPU/メモリ変更
+
+設定の変更後は「設定をリロード」ボタンを押せば、プロセス再起動なしで反映されます
+（`BIND_HOST` と `PORT` だけは systemctl restart が必要）。
+
 ## 仕組み
 
 1. リポジトリとブランチを選ぶ（GitHub PAT を使うのでプライベートリポジトリも一覧に出ます）。
