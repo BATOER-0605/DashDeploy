@@ -70,8 +70,9 @@ config/servers.yml    サニタイズ済みサンプル（実体は servers.loca
 2. フロントは `EventSource('/api/deploy/:id/logs')` で SSE を開く。
 3. `runDeployment` の各ステップは `logbus.publish()` でログ行を発行し、これが
    (a) `deployment_events` への永続化 (b) 接続中の SSE クライアントへの push を行う。
-4. ステップ: ゲスト起動確認 → 任意のプリスナップショット → SSH で clone → `.dashdeploy.yml`
-   読み取り → `docker compose up -d --build` → Tailscale IP 取得 → ヘルスチェック。
+4. ステップ: ゲスト起動確認 → **Docker 自動セットアップ（未インストールなら `get.docker.com` で導入、
+   冪等）** → 任意のプリスナップショット → SSH で clone → `.dashdeploy.yml` 読み取り →
+   `docker compose up -d --build` → Tailscale IP 取得 → ヘルスチェック。
 5. 終了時に `deployments` を `success`／`failed` に更新し、`logbus.finish()` で SSE を閉じる。
 
 ### 復元（`services/deploy.ts: restoreDeployment`）
@@ -97,6 +98,10 @@ config/servers.yml    サニタイズ済みサンプル（実体は servers.loca
   `exitstatus!=='OK'` で `PveError` を投げる。
 - **PVE 認証**: API トークン（`Authorization: PVEAPIToken=...`）。トークン認証なので
   CSRF トークン不要。自己署名証明書のため undici `Agent` で `rejectUnauthorized:false`。
+- **Docker の自動セットアップ**: ベースライン VM／CT に Tailscale だけが入っていることを前提と
+  し、Docker は `ensureDockerScript()`（`services/deploy.ts`）が `get.docker.com` で初回のみ導入
+  する。すべての docker コマンドは `$SUDO docker` で実行し、SSH ユーザーが root か非 root かを
+  問わず動作する（非 root の場合はパスワードなし sudo を要求する）。
 - **シークレットの取り扱い**: GitHub PAT と PVE トークンはブラウザに出さない。
   `/api/servers` は `listPublicServers()` でサニタイズ。PAT は `deploy.ts` の
   scrubber でログ行から除去してから永続化・配信する。clone は

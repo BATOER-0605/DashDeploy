@@ -34,14 +34,44 @@ function publish(
   logbus.publish(deploymentId, stream, scrub(line));
 }
 
+const SUDO_PRELUDE = 'if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi';
+
+function ensureDockerScript(): string {
+  // Idempotent: skips installation if docker is already present.
+  // Targets only need passwordless sudo (or SSH as root) — no Docker pre-install required.
+  return [
+    "set -e",
+    SUDO_PRELUDE,
+    "if ! command -v curl >/dev/null 2>&1; then",
+    '  echo "installing curl..."',
+    "  if command -v apt-get >/dev/null 2>&1; then",
+    "    $SUDO apt-get update -qq && $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y curl;",
+    "  elif command -v dnf >/dev/null 2>&1; then",
+    "    $SUDO dnf install -y curl;",
+    "  elif command -v yum >/dev/null 2>&1; then",
+    "    $SUDO yum install -y curl;",
+    "  else",
+    '    echo "no supported package manager to install curl" >&2; exit 1;',
+    "  fi",
+    "fi",
+    "if ! command -v docker >/dev/null 2>&1; then",
+    '  echo "installing Docker via get.docker.com..."',
+    "  curl -fsSL https://get.docker.com | $SUDO sh",
+    "else",
+    '  echo "docker already installed: $(docker --version)"',
+    "fi",
+    "$SUDO systemctl enable --now docker >/dev/null 2>&1 || true",
+  ].join("\n");
+}
+
 function defaultBuildScript(): string {
   return [
-    'if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ] || [ -f compose.yml ] || [ -f compose.yaml ]; then',
-    "  docker compose up -d --build;",
+    "if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ] || [ -f compose.yml ] || [ -f compose.yaml ]; then",
+    "  $SUDO docker compose up -d --build;",
     "elif [ -f Dockerfile ]; then",
-    "  docker build -t dashdeploy-app .;",
-    "  docker rm -f dashdeploy-app 2>/dev/null || true;",
-    "  docker run -d --name dashdeploy-app -P dashdeploy-app;",
+    "  $SUDO docker build -t dashdeploy-app .;",
+    "  $SUDO docker rm -f dashdeploy-app 2>/dev/null || true;",
+    "  $SUDO docker run -d --name dashdeploy-app -P dashdeploy-app;",
     "else",
     '  echo "no Dockerfile or docker-compose file found in repo" >&2; exit 1;',
     "fi",
@@ -126,7 +156,12 @@ export async function runDeployment(
       log("system", "guest already running");
     }
 
-    // 2. Optional pre-deploy snapshot.
+    // 2. Ensure Docker is installed on the target (idempotent).
+    log("system", "ensuring Docker is installed on target...");
+    const dockerCode = await runCommand(server, ensureDockerScript(), log);
+    if (dockerCode !== 0) throw new Error(`docker setup failed (exit ${dockerCode})`);
+
+    // 3. Optional pre-deploy snapshot.
     if (opts.takePreSnapshot) {
       const snapName = `predeploy-${Date.now()}`;
       log("system", `creating pre-deploy snapshot "${snapName}"...`);
@@ -146,9 +181,10 @@ export async function runDeployment(
     const ddf = await readDashDeployFile(server);
     const buildCmd = ddf.build ?? defaultBuildScript();
 
-    // 5. Build & run with Docker.
+    // 5. Build & run with Docker. $SUDO is set by the prelude so build commands
+    //    work the same whether the SSH user is root or has passwordless sudo.
     log("system", "building and starting containers...");
-    const buildScript = `set -e\ncd ${APP_DIR}\n${buildCmd}`;
+    const buildScript = `set -e\n${SUDO_PRELUDE}\ncd ${APP_DIR}\n${buildCmd}`;
     const buildCode = await runCommand(server, buildScript, log);
     if (buildCode !== 0) throw new Error(`docker build/run failed (exit ${buildCode})`);
 

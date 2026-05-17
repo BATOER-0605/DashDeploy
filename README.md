@@ -12,6 +12,7 @@ GitHub のリポジトリを自宅の Proxmox VE（PVE）の LXC コンテナ／
 2. デプロイ先サーバをプルダウンから選ぶ（`config/servers.yml` で定義）。
 3. **デプロイ** を押すと、DashDeploy は次を実行します。
    - 対象ゲストが停止していれば起動する（PVE API）
+   - **Docker が入っていなければ自動でインストール**する（`get.docker.com`、初回のみ）
    - 任意でデプロイ前スナップショットを取得する
    - SSH で接続し、リポジトリを clone して `docker compose up -d --build`（または `Dockerfile` をビルド／実行）
    - すべてのログをブラウザにリアルタイム配信する（SSE）
@@ -19,14 +20,18 @@ GitHub のリポジトリを自宅の Proxmox VE（PVE）の LXC コンテナ／
 4. テストが終わったら **復元** を押すと、対象機をベースラインスナップショット（既定では `clean`）に
    ロールバックします（PVE API）。
 
-デプロイ先には Docker がインストールされ、tailnet に参加していることを前提とします。
+デプロイ先には **Tailscale がインストールされ tailnet に参加していること**、SSH ユーザーが
+**root であるか、もしくはパスワードなしで `sudo` を実行できること** を前提とします。Docker は
+初回デプロイ時に自動でインストールされるため、事前準備は不要です。
 リポジトリには `Dockerfile` または `docker-compose.yml` が含まれていることを前提とします。
 
 ## 必要なもの
 
 - Node.js 20 以上
 - API トークンを発行した Proxmox VE 8 または 9 のホスト（クラスタ可）
-- Docker と Tailscale を導入し、ベースラインスナップショットを作成済みの LXC／QEMU ターゲット 1 台以上
+- LXC／QEMU ターゲット 1 台以上。**事前に必要なのは Tailscale 導入とベースラインスナップショット
+  （`clean`）のみ**。SSH ユーザーは root であるか、`sudo` を**パスワードなし**で実行できること
+  （`/etc/sudoers.d/<user>` に `<user> ALL=(ALL) NOPASSWD:ALL` 等）。Docker はデプロイ時に自動導入
 - リポジトリの読み取り／clone 権限を持つ GitHub Personal Access Token（PAT）
 
 ## セットアップ
@@ -62,10 +67,11 @@ npm run dev                         # server（tsx watch）+ web（Vite が /api
 
 ### 任意: リポジトリ内の `.dashdeploy.yml`
 
-リポジトリごとに既定の Docker 動作を上書きできます。
+リポジトリごとに既定の Docker 動作を上書きできます。`$SUDO` は DashDeploy が事前定義する
+変数（非 root の場合は `sudo`、root の場合は空文字）なので、自分のビルドコマンドでも利用できます。
 
 ```yaml
-build: docker compose -f docker-compose.prod.yml up -d --build
+build: $SUDO docker compose -f docker-compose.prod.yml up -d --build
 appPort: 8080
 healthPath: /healthz
 ```
