@@ -36,6 +36,35 @@ GitHub のリポジトリを自宅の Proxmox VE（PVE）の LXC コンテナ／
 
 ## セットアップ
 
+### 推奨: `./setup.sh`（systemd サービスとして常駐させる）
+
+ホスト（DashDeploy 本体を動かす LXC/VM）で **一般ユーザ権限** にて次を実行します。
+
+```bash
+./setup.sh
+```
+
+このスクリプトは:
+1. Node.js のバージョンを確認（>= 20）
+2. `.env` が無ければ `.env.example` からコピーし、編集を促して終了します。
+   2 回目の実行で続きが進みます。
+3. `npm run setup` と `npm run build` を実行
+4. `/etc/systemd/system/dashdeploy.service` を生成・配置（`sudo` を要求します）
+5. サービスを **有効化（OS 起動時に自動起動。ユーザログイン不要）** して起動
+
+systemd サービスとして登録されるため、ホストを再起動しても自動的に立ち上がります。
+よく使うコマンド:
+
+```bash
+sudo systemctl status dashdeploy.service   # 状態確認
+journalctl -u dashdeploy.service -f        # ライブログ
+sudo systemctl restart dashdeploy.service  # 再起動
+sudo systemctl stop dashdeploy.service     # 停止
+sudo systemctl disable dashdeploy.service  # 自動起動の無効化
+```
+
+### 手動で動かす場合
+
 ```bash
 npm run setup                       # server と web の依存関係をインストール
 cp .env.example .env                # GitHub PAT と PVE トークンを記入
