@@ -2,11 +2,12 @@ const API = "https://api.tailscale.com/api/v2";
 
 export interface TailscaleDevice {
   id: string;
-  name: string; // FQDN like host.tailXXXX.ts.net
-  hostname: string;
-  addresses: string[]; // IPv4 / IPv6
+  name: string; // MagicDNS FQDN
+  hostname: string; // short machine name
+  addresses: string[];
   os?: string;
-  online?: boolean;
+  connectedToControl?: boolean;
+  lastSeen?: string;
 }
 
 export class TailscaleError extends Error {}
@@ -17,7 +18,8 @@ interface RawDevice {
   hostname: string;
   addresses?: string[];
   os?: string;
-  online?: boolean;
+  connectedToControl?: boolean;
+  lastSeen?: string;
 }
 
 export async function listDevices(
@@ -56,6 +58,7 @@ export async function listDevices(
     hostname: d.hostname,
     addresses: d.addresses ?? [],
     os: d.os,
-    online: d.online,
+    connectedToControl: d.connectedToControl,
+    lastSeen: d.lastSeen,
   }));
 }

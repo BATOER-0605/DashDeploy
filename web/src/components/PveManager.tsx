@@ -145,12 +145,25 @@ export function PveManager() {
   );
 }
 
+/**
+ * PVE returns `content` as a comma-separated string (e.g. "vztmpl,iso,backup")
+ * in current versions; older versions may return an array. Normalize.
+ */
+function contentsOf(s: PveStorage): string[] {
+  const c = (s as unknown as { content?: string | string[] }).content;
+  if (Array.isArray(c)) return c;
+  if (typeof c === "string") return c.split(",").map((x) => x.trim());
+  return [];
+}
+
 function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => void }) {
   const [storages, setStorages] = useState<PveStorage[]>([]);
+  const [storagesLoaded, setStoragesLoaded] = useState(false);
   const [templates, setTemplates] = useState<PveStorageVolume[]>([]);
+  const [templatesLoaded, setTemplatesLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [templateStorage, setTemplateStorage] = useState<string>("local");
+  const [templateStorage, setTemplateStorage] = useState<string>("");
   const [form, setForm] = useState<CreateLxcParams>({
     node,
     vmid: 200,
@@ -158,7 +171,7 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
     hostname: "dashdeploy-target",
     cores: 1,
     memory: 1024,
-    storage: "local-lvm",
+    storage: "",
     diskSize: 8,
     bridge: "vmbr0",
     ipConfig: "dhcp",
@@ -166,25 +179,66 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
     start: false,
   });
 
-  useEffect(() => {
-    setForm((f) => ({ ...f, node }));
-    api
-      .listPveStorage(node)
-      .then(setStorages)
-      .catch((e) => setError(String(e)));
-  }, [node]);
+  const vztmplStorages = storages.filter((s) => contentsOf(s).includes("vztmpl"));
+  const rootStorages = storages.filter((s) => contentsOf(s).includes("rootdir"));
 
   useEffect(() => {
-    if (!templateStorage) return;
+    setForm((f) => ({ ...f, node }));
+    setStoragesLoaded(false);
+    api
+      .listPveStorage(node)
+      .then((s) => {
+        setStorages(s);
+        setStoragesLoaded(true);
+      })
+      .catch((e) => {
+        setError(String(e));
+        setStoragesLoaded(true);
+      });
+  }, [node]);
+
+  // Once storages load, auto-pick the first storage that supports vztmpl
+  // (templates) and rootdir (LXC rootfs) so the dropdowns aren't empty
+  // pointing at "local"/"local-lvm" names that don't exist on this PVE.
+  useEffect(() => {
+    if (!storagesLoaded) return;
+    if (vztmplStorages.length > 0 && !vztmplStorages.find((s) => s.storage === templateStorage)) {
+      setTemplateStorage(vztmplStorages[0].storage);
+    }
+    if (rootStorages.length > 0 && !rootStorages.find((s) => s.storage === form.storage)) {
+      setForm((f) => ({ ...f, storage: rootStorages[0].storage }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storagesLoaded, storages]);
+
+  useEffect(() => {
+    if (!templateStorage) {
+      setTemplates([]);
+      setTemplatesLoaded(false);
+      return;
+    }
+    setTemplatesLoaded(false);
     api
       .listPveStorageContent(node, templateStorage, "vztmpl")
-      .then(setTemplates)
-      .catch((e) => setError(String(e)));
+      .then((t) => {
+        setTemplates(t);
+        setTemplatesLoaded(true);
+        // Reset selected template when the storage changes
+        setForm((f) => (t.find((v) => v.volid === f.ostemplate) ? f : { ...f, ostemplate: "" }));
+      })
+      .catch((e) => {
+        setError(String(e));
+        setTemplatesLoaded(true);
+      });
   }, [node, templateStorage]);
 
   async function submit() {
     if (!form.ostemplate) {
       setError("OS テンプレートを選択してください。");
+      return;
+    }
+    if (!form.storage) {
+      setError("ルートディスクのストレージを選択してください。");
       return;
     }
     setError(null);
@@ -199,11 +253,16 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
     }
   }
 
-  const rootStorages = storages.filter((s) => s.content.includes("rootdir"));
-
   return (
     <details className="card-inner" open>
       <summary><strong>新規 LXC コンテナ作成</strong></summary>
+
+      {storagesLoaded && vztmplStorages.length === 0 && (
+        <p className="error">
+          このノードに vztmpl 対応ストレージが見つかりません。PVE のデータセンター設定で
+          ストレージの「コンテンツ」に <code>vztmpl</code> を追加してください。
+        </p>
+      )}
 
       <div className="field">
         <label>VMID</label>
@@ -225,22 +284,39 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
       <div className="field">
         <label>テンプレート格納ストレージ</label>
         <select value={templateStorage} onChange={(e) => setTemplateStorage(e.target.value)}>
-          {storages
-            .filter((s) => s.content.includes("vztmpl"))
-            .map((s) => (
-              <option key={s.storage} value={s.storage}>
-                {s.storage}
-              </option>
-            ))}
+          <option value="">— ストレージを選択 —</option>
+          {vztmplStorages.map((s) => (
+            <option key={s.storage} value={s.storage}>
+              {s.storage}
+            </option>
+          ))}
         </select>
       </div>
       <div className="field">
-        <label>OS テンプレート</label>
+        <label>
+          OS テンプレート
+          {templatesLoaded && templateStorage && templates.length === 0 && (
+            <span className="muted">
+              （{templateStorage} にテンプレートがありません。PVE シェルで{" "}
+              <code>pveam update &amp;&amp; pveam download {templateStorage} &lt;name&gt;</code>{" "}
+              を実行してください）
+            </span>
+          )}
+        </label>
         <select
           value={form.ostemplate}
           onChange={(e) => setForm({ ...form, ostemplate: e.target.value })}
+          disabled={!templateStorage || templates.length === 0}
         >
-          <option value="">— テンプレートを選択 —</option>
+          <option value="">
+            {!templateStorage
+              ? "— まずストレージを選択 —"
+              : !templatesLoaded
+                ? "— 読み込み中 —"
+                : templates.length === 0
+                  ? "— テンプレートが見つかりません —"
+                  : "— テンプレートを選択 —"}
+          </option>
           {templates.map((t) => (
             <option key={t.volid} value={t.volid}>
               {t.volid}
@@ -267,8 +343,17 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
       </div>
 
       <div className="field">
-        <label>ルートディスク ストレージ</label>
+        <label>
+          ルートディスク ストレージ
+          {storagesLoaded && rootStorages.length === 0 && (
+            <span className="muted">
+              （rootdir 対応ストレージがありません。PVE のストレージ設定で
+              「コンテンツ」に <code>rootdir</code> を追加してください）
+            </span>
+          )}
+        </label>
         <select value={form.storage} onChange={(e) => setForm({ ...form, storage: e.target.value })}>
+          <option value="">— ストレージを選択 —</option>
           {rootStorages.map((s) => (
             <option key={s.storage} value={s.storage}>
               {s.storage}

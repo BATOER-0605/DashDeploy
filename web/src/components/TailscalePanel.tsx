@@ -63,8 +63,9 @@ export function TailscalePanel() {
         <thead>
           <tr>
             <th>ホスト名</th>
+            <th>MagicDNS</th>
             <th>OS</th>
-            <th>状態</th>
+            <th>接続</th>
             <th>IPv4</th>
             <th>操作</th>
           </tr>
@@ -72,13 +73,17 @@ export function TailscalePanel() {
         <tbody>
           {devices.map((d) => {
             const ip = ipv4Of(d);
+            const online = d.connectedToControl === true;
             return (
               <tr key={d.id}>
                 <td>{d.hostname || d.name}</td>
+                <td>
+                  <code>{d.name}</code>
+                </td>
                 <td>{d.os ?? "—"}</td>
                 <td>
-                  <span className={`badge badge-${d.online ? "success" : "failed"}`}>
-                    {d.online ? "オンライン" : "オフライン"}
+                  <span className={`badge badge-${online ? "success" : "failed"}`}>
+                    {online ? "オンライン" : "オフライン"}
                   </span>
                 </td>
                 <td>

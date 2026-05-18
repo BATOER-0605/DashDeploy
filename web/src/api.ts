@@ -197,7 +197,8 @@ export interface TailscaleDevice {
   hostname: string;
   addresses: string[];
   os?: string;
-  online?: boolean;
+  connectedToControl?: boolean;
+  lastSeen?: string;
 }
 
 export interface PveNode {
