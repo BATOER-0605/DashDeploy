@@ -32,9 +32,25 @@ export function TailscalePanel() {
       <div>
         <p className="error">{error}</p>
         <p className="muted">
-          .env に <code>TAILSCALE_API_KEY</code> と <code>TAILSCALE_TAILNET</code> を設定し、
-          リロードしてから再試行してください。
+          原因と対処の目安:
         </p>
+        <ul className="muted">
+          <li>
+            <code>TAILSCALE_API_KEY</code> が正しいか確認してください
+            （<a href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noreferrer">
+              tailscale.com で発行
+            </a>）。
+          </li>
+          <li>
+            <code>TAILSCALE_TAILNET</code> は組織用なら <code>example.com</code>、個人用なら
+            ログインメール、もしくは特殊値 <code>-</code>（自分のデフォルト tailnet）を指定します。
+          </li>
+          <li>
+            <code>fetch failed</code> と出る場合は DashDeploy ホストから
+            <code>api.tailscale.com</code> へ到達できていません（DNS / IPv6 / Firewall を確認）。
+          </li>
+          <li>変更後は設定画面上部の「設定をリロード」を押してください。</li>
+        </ul>
       </div>
     );
   }

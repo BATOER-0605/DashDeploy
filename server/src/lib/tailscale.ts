@@ -25,16 +25,28 @@ export async function listDevices(
   tailnet: string,
 ): Promise<TailscaleDevice[]> {
   const url = `${API}/tailnet/${encodeURIComponent(tailnet)}/devices`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: "application/json",
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+  } catch (err) {
+    // Node's fetch wraps the real network/DNS/TLS error in `err.cause`;
+    // surface it so the UI shows something actionable instead of just "fetch failed".
+    const e = err as Error & { cause?: unknown };
+    const cause =
+      e.cause instanceof Error ? e.cause.message : e.cause ? String(e.cause) : "";
+    throw new TailscaleError(
+      `Tailscale API ${url} へ到達できません: ${e.message}${cause ? ` (${cause})` : ""}`,
+    );
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new TailscaleError(
-      `Tailscale API ${url} failed: ${res.status} ${res.statusText} ${text}`,
+      `Tailscale API ${url} がエラーを返しました: ${res.status} ${res.statusText} ${text}`,
     );
   }
   const body = (await res.json()) as { devices: RawDevice[] };

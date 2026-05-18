@@ -138,8 +138,26 @@ healthPath: /healthz
   コミットされるのはサニタイズ済みの `config/servers.yml` と `.env.example` のみです。
 - GitHub PAT と PVE トークンはブラウザに送られません。`/api/servers` はサニタイズ済みです。
   PAT はログ行を保存・配信する前にマスクされます。
-- PVE トークンは最小権限にしてください: 対象ゲストに対する `VM.Audit`、`VM.PowerMgmt`、
-  `VM.Snapshot`、`VM.Snapshot.Rollback`。
+- PVE トークンは最小権限にしてください。用途別に必要な権限は次のとおりです。
+
+  **デプロイと復元のみ**（最小構成）— 対象ゲスト（例: `/vms/121`）に対して:
+  - `VM.Audit`、`VM.PowerMgmt`、`VM.Snapshot`、`VM.Snapshot.Rollback`
+
+  **設定画面の「VM/CT 管理」機能（作成・削除・CPU/メモリ変更）も使う場合**は、これらに加えて:
+  - `/vms` に対して `VM.Allocate`、`VM.Config.CPU`、`VM.Config.Memory`、`VM.Config.Disk`、
+    `VM.Config.Network`、`VM.Config.Options`
+  - `/storage`（または該当の `/storage/<name>`）に対して `Datastore.Audit`、
+    `Datastore.AllocateSpace`、`Datastore.AllocateTemplate`
+  - `/` に対して `Sys.Audit`（ノード一覧の取得）
+
+  かんたんに済ませたい場合は、上記すべてを含む組み込みロール **`PVEAdmin`** を `/` に
+  Propagate 付きで割り当てる方法もあります（権限は広くなります）。CLI 例:
+
+  ```sh
+  pveum role add DashDeployFull -privs \
+    "VM.Audit,VM.PowerMgmt,VM.Snapshot,VM.Snapshot.Rollback,VM.Allocate,VM.Config.CPU,VM.Config.Memory,VM.Config.Disk,VM.Config.Network,VM.Config.Options,Datastore.Audit,Datastore.AllocateSpace,Datastore.AllocateTemplate,Sys.Audit"
+  pveum acl modify / --tokens 'root@pam!dashdeploy' --roles DashDeployFull
+  ```
 - `PVE_TLS_REJECT_UNAUTHORIZED=false` は自宅 PVE の自己署名証明書向けの既定値です。
 
 ## ヒント
