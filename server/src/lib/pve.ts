@@ -198,6 +198,30 @@ export class PveClient {
     );
   }
 
+  /** List downloadable templates from the Proxmox appliance catalog (pveam). */
+  listAvailableTemplates(
+    node: string,
+  ): Promise<
+    {
+      template: string;
+      package?: string;
+      section?: string;
+      os?: string;
+      version?: string;
+      description?: string;
+    }[]
+  > {
+    return this.request("GET", `/nodes/${node}/aplinfo`);
+  }
+
+  /** Download a template into a storage (returns a UPID). */
+  downloadTemplate(node: string, storage: string, template: string): Promise<string> {
+    return this.request<string>("POST", `/nodes/${node}/aplinfo`, {
+      storage,
+      template,
+    });
+  }
+
   // --- Mutations ---
 
   createLxc(

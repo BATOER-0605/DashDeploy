@@ -54,6 +54,37 @@ export async function pveRoutes(app: FastifyInstance): Promise<void> {
     ),
   }));
 
+  // List downloadable templates from the Proxmox appliance catalog.
+  app.get<{ Params: { node: string } }>(
+    "/api/pve/nodes/:node/templates/available",
+    async (req) => ({
+      templates: await pve().listAvailableTemplates(req.params.node),
+    }),
+  );
+
+  // Download a template into the given storage (sync, waits for completion).
+  const downloadTemplateSchema = z.object({
+    node: z.string().min(1),
+    storage: z.string().min(1),
+    template: z.string().min(1),
+  });
+  app.post("/api/pve/templates/download", async (req, reply) => {
+    const parsed = downloadTemplateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "invalid request", issues: parsed.error.issues };
+    }
+    const { node, storage, template } = parsed.data;
+    try {
+      const upid = await pve().downloadTemplate(node, storage, template);
+      await pve().waitForTask(node, upid);
+      return { ok: true };
+    } catch (err) {
+      reply.code(500);
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
   // Create an LXC container.
   app.post("/api/pve/lxc", async (req, reply) => {
     const parsed = createLxcSchema.safeParse(req.body);

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   api,
+  type AvailableTemplate,
   type CreateLxcParams,
   type PveGuest,
   type PveNode,
@@ -211,7 +212,7 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storagesLoaded, storages]);
 
-  useEffect(() => {
+  const reloadTemplates = useCallback(() => {
     if (!templateStorage) {
       setTemplates([]);
       setTemplatesLoaded(false);
@@ -221,16 +222,27 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
     api
       .listPveStorageContent(node, templateStorage, "vztmpl")
       .then((t) => {
-        setTemplates(t);
+        // Defensive client-side filter: only keep entries that actually look
+        // like LXC templates (`<storage>:vztmpl/<file>`) — PVE versions vary
+        // in how strictly the `?content=vztmpl` query param filters.
+        const filtered = t.filter(
+          (v) => v.content === "vztmpl" || /\/vztmpl\//.test(v.volid),
+        );
+        setTemplates(filtered);
         setTemplatesLoaded(true);
-        // Reset selected template when the storage changes
-        setForm((f) => (t.find((v) => v.volid === f.ostemplate) ? f : { ...f, ostemplate: "" }));
+        setForm((f) =>
+          filtered.find((v) => v.volid === f.ostemplate) ? f : { ...f, ostemplate: "" },
+        );
       })
       .catch((e) => {
         setError(String(e));
         setTemplatesLoaded(true);
       });
   }, [node, templateStorage]);
+
+  useEffect(() => {
+    reloadTemplates();
+  }, [reloadTemplates]);
 
   async function submit() {
     if (!form.ostemplate) {
@@ -294,36 +306,50 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
       </div>
       <div className="field">
         <label>
-          OS テンプレート
-          {templatesLoaded && templateStorage && templates.length === 0 && (
-            <span className="muted">
-              （{templateStorage} にテンプレートがありません。PVE シェルで{" "}
-              <code>pveam update &amp;&amp; pveam download {templateStorage} &lt;name&gt;</code>{" "}
-              を実行してください）
-            </span>
-          )}
+          OS テンプレート{" "}
+          <span className="muted">
+            （{templates.length} 件
+            {templatesLoaded && templateStorage && templates.length === 0
+              ? "／下のダウンロード欄から取得できます"
+              : ""}
+            ）
+          </span>
         </label>
-        <select
-          value={form.ostemplate}
-          onChange={(e) => setForm({ ...form, ostemplate: e.target.value })}
-          disabled={!templateStorage || templates.length === 0}
-        >
-          <option value="">
-            {!templateStorage
-              ? "— まずストレージを選択 —"
-              : !templatesLoaded
-                ? "— 読み込み中 —"
-                : templates.length === 0
-                  ? "— テンプレートが見つかりません —"
-                  : "— テンプレートを選択 —"}
-          </option>
-          {templates.map((t) => (
-            <option key={t.volid} value={t.volid}>
-              {t.volid}
+        <div style={{ display: "flex", gap: "0.4rem" }}>
+          <select
+            value={form.ostemplate}
+            onChange={(e) => setForm({ ...form, ostemplate: e.target.value })}
+            disabled={!templateStorage || templates.length === 0}
+            style={{ flex: 1 }}
+          >
+            <option value="">
+              {!templateStorage
+                ? "— まずストレージを選択 —"
+                : !templatesLoaded
+                  ? "— 読み込み中 —"
+                  : templates.length === 0
+                    ? "— テンプレートが見つかりません —"
+                    : "— テンプレートを選択 —"}
             </option>
-          ))}
-        </select>
+            {templates.map((t) => (
+              <option key={t.volid} value={t.volid}>
+                {t.volid}
+              </option>
+            ))}
+          </select>
+          <button type="button" onClick={reloadTemplates} title="一覧を再取得">
+            ↻
+          </button>
+        </div>
       </div>
+
+      {templateStorage && (
+        <DownloadTemplatePanel
+          node={node}
+          storage={templateStorage}
+          onDownloaded={reloadTemplates}
+        />
+      )}
 
       <div className="field">
         <label>CPU コア</label>
@@ -425,6 +451,129 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
         {creating ? "作成中…" : "作成"}
       </button>
       {error && <p className="error">{error}</p>}
+    </details>
+  );
+}
+
+function DownloadTemplatePanel({
+  node,
+  storage,
+  onDownloaded,
+}: {
+  node: string;
+  storage: string;
+  onDownloaded: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [catalog, setCatalog] = useState<AvailableTemplate[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [selected, setSelected] = useState("");
+  const [filter, setFilter] = useState("");
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  function load() {
+    setError(null);
+    setLoaded(false);
+    api
+      .listAvailableTemplates(node)
+      .then((t) => {
+        // Prefer the LXC `system` section but keep others available too.
+        const sorted = [...t].sort((a, b) => {
+          if (a.section === "system" && b.section !== "system") return -1;
+          if (a.section !== "system" && b.section === "system") return 1;
+          return a.template.localeCompare(b.template);
+        });
+        setCatalog(sorted);
+        setLoaded(true);
+      })
+      .catch((e) => {
+        setError(String(e));
+        setLoaded(true);
+      });
+  }
+
+  useEffect(() => {
+    if (open && catalog.length === 0) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  async function download() {
+    if (!selected) {
+      setError("ダウンロードするテンプレートを選択してください。");
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    setDownloading(true);
+    try {
+      await api.downloadTemplate(node, storage, selected);
+      setNotice(`${selected} を ${storage} にダウンロードしました。`);
+      onDownloaded();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  const filtered = filter
+    ? catalog.filter((c) =>
+        `${c.template} ${c.os ?? ""} ${c.version ?? ""} ${c.description ?? ""}`
+          .toLowerCase()
+          .includes(filter.toLowerCase()),
+      )
+    : catalog;
+
+  return (
+    <details
+      className="card-inner"
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      style={{ marginBottom: "0.8rem" }}
+    >
+      <summary>
+        <strong>テンプレートをダウンロード</strong>{" "}
+        <span className="muted">（{storage} に保存）</span>
+      </summary>
+
+      {!loaded && <p className="muted">カタログを取得中…</p>}
+
+      {loaded && (
+        <>
+          <div className="field">
+            <label>カタログ絞り込み（例: ubuntu / debian）</label>
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="ubuntu"
+            />
+          </div>
+          <div className="field">
+            <label>テンプレート（{filtered.length} 件）</label>
+            <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+              <option value="">— テンプレートを選択 —</option>
+              {filtered.map((c) => (
+                <option key={c.template} value={c.template}>
+                  [{c.section ?? "?"}] {c.template}
+                  {c.version ? ` (${c.version})` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button type="button" className="primary" disabled={downloading} onClick={download}>
+            {downloading ? "ダウンロード中…（数分かかる場合あり）" : "ダウンロード"}
+          </button>
+          <button type="button" onClick={load} style={{ marginLeft: "0.4rem" }}>
+            カタログ再取得
+          </button>
+        </>
+      )}
+
+      {error && <p className="error">{error}</p>}
+      {notice && <p className="muted">{notice}</p>}
     </details>
   );
 }

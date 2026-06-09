@@ -161,6 +161,21 @@ export const api = {
     );
     return items;
   },
+  async listAvailableTemplates(node: string): Promise<AvailableTemplate[]> {
+    const { templates } = await json<{ templates: AvailableTemplate[] }>(
+      await fetch(`/api/pve/nodes/${node}/templates/available`),
+    );
+    return templates;
+  },
+  async downloadTemplate(node: string, storage: string, template: string): Promise<void> {
+    await json(
+      await fetch("/api/pve/templates/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node, storage, template }),
+      }),
+    );
+  },
   async createLxc(params: CreateLxcParams): Promise<void> {
     await json(
       await fetch("/api/pve/lxc", {
@@ -225,6 +240,15 @@ export interface PveStorageVolume {
   volid: string;
   content: string;
   size: number;
+}
+
+export interface AvailableTemplate {
+  template: string;
+  package?: string;
+  section?: string;
+  os?: string;
+  version?: string;
+  description?: string;
 }
 
 export interface CreateLxcParams {
