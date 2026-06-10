@@ -5,21 +5,16 @@ import type { GuestKind } from "../lib/pve.js";
 
 const kindSchema = z.enum(["lxc", "qemu"]);
 
-const createLxcSchema = z.object({
+const cloneGuestSchema = z.object({
   node: z.string().min(1),
-  vmid: z.number().int().positive(),
-  ostemplate: z.string().min(1), // e.g. local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst
-  hostname: z.string().min(1).optional(),
-  cores: z.number().int().positive().default(1),
-  memory: z.number().int().positive().default(512), // MB
-  storage: z.string().min(1).default("local-lvm"),
-  diskSize: z.number().int().positive().default(8), // GB
-  password: z.string().min(5).optional(),
-  sshPublicKey: z.string().optional(),
-  bridge: z.string().default("vmbr0"),
-  ipConfig: z.string().default("dhcp"), // "dhcp" or "ip=1.2.3.4/24,gw=1.2.3.1"
-  unprivileged: z.boolean().default(true),
-  start: z.boolean().default(false),
+  sourceKind: kindSchema,
+  sourceVmid: z.number().int().positive(),
+  newVmid: z.number().int().positive(),
+  name: z.string().min(1),
+  full: z.boolean().default(false),
+  storage: z.string().min(1).optional(),
+  description: z.string().optional(),
+  start: z.boolean().default(true),
 });
 
 const updateConfigSchema = z.object({
@@ -85,34 +80,47 @@ export async function pveRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // Create an LXC container.
-  app.post("/api/pve/lxc", async (req, reply) => {
-    const parsed = createLxcSchema.safeParse(req.body);
+  // List template-ized guests (lxc + qemu) on the node — these are the only
+  // valid clone sources in the redesigned create flow.
+  app.get<{ Params: { node: string } }>(
+    "/api/pve/nodes/:node/templates/guests",
+    async (req) => ({
+      templates: await pve().listTemplateGuests(req.params.node),
+    }),
+  );
+
+  // Suggest the next free vmid (used to prefill the clone form).
+  app.get("/api/pve/nextid", async (_req, reply) => {
+    try {
+      return { vmid: await pve().getNextVmid() };
+    } catch (err) {
+      reply.code(500);
+      return { error: (err as Error).message };
+    }
+  });
+
+  // Clone an LXC/VM template into a new guest, optionally starting it.
+  app.post("/api/pve/clone", async (req, reply) => {
+    const parsed = cloneGuestSchema.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
       return { error: "invalid request", issues: parsed.error.issues };
     }
     const p = parsed.data;
-    const params: Record<string, string | number> = {
-      vmid: p.vmid,
-      ostemplate: p.ostemplate,
-      cores: p.cores,
-      memory: p.memory,
-      rootfs: `${p.storage}:${p.diskSize}`,
-      net0:
-        p.ipConfig === "dhcp"
-          ? `name=eth0,bridge=${p.bridge},ip=dhcp`
-          : `name=eth0,bridge=${p.bridge},${p.ipConfig}`,
-      unprivileged: p.unprivileged ? 1 : 0,
-      start: p.start ? 1 : 0,
-    };
-    if (p.hostname) params.hostname = p.hostname;
-    if (p.password) params.password = p.password;
-    if (p.sshPublicKey) params["ssh-public-keys"] = p.sshPublicKey;
     try {
-      const upid = await pve().createLxc(p.node, params);
+      const upid = await pve().cloneGuest(p.node, p.sourceKind, p.sourceVmid, {
+        newid: p.newVmid,
+        name: p.name,
+        full: p.full,
+        storage: p.storage,
+        description: p.description,
+      });
       await pve().waitForTask(p.node, upid);
-      return { ok: true, vmid: p.vmid };
+      if (p.start) {
+        const startUpid = await pve().start(p.node, p.sourceKind, p.newVmid);
+        await pve().waitForTask(p.node, startUpid);
+      }
+      return { ok: true, vmid: p.newVmid, kind: p.sourceKind };
     } catch (err) {
       reply.code(500);
       return { ok: false, error: (err as Error).message };

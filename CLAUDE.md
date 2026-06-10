@@ -61,13 +61,14 @@ server/src/
     repos.ts servers.ts deploy.ts restore.ts history.ts health.ts
     settings.ts       .env / servers.local.yml の CRUD + リロード
     tailscale.ts      Tailscale API 経由のデバイス一覧
-    pve.ts            ノード/ゲスト/ストレージ列挙、LXC 作成/削除/設定変更、
+    pve.ts            ノード/ゲスト/ストレージ列挙、テンプレートゲスト列挙、
+                      テンプレートクローン（LXC/VM 統一）、削除/設定変更、
                       aplinfo カタログ／ダウンロード
 web/src/
   App.tsx api.ts      ホーム/設定ページのナビゲーション（state 切替）
   components/         DeployPanel / RepoPicker / ServerPicker / LogViewer / HistoryList
                       SettingsPage / EnvEditor / ServersEditor /
-                      TailscalePanel / PveManager（CreateLxcForm + DownloadTemplatePanel）
+                      TailscalePanel / PveManager（CloneGuestPanel + DownloadTemplatePanel）
 config/servers.yml    サニタイズ済みサンプル（実体は servers.local.yml を gitignore）
 ```
 
@@ -117,12 +118,19 @@ config/servers.yml    サニタイズ済みサンプル（実体は servers.loca
 設定ページは 5 セクションを縦に並べる: 設定の反映ボタン / 環境変数（EnvEditor）/
 サーバ台帳（ServersEditor、生 YAML）/ Tailscale デバイス（API 経由）/ PVE VM/CT 管理。
 
-### LXC テンプレートのダウンロード（`PveManager.tsx: DownloadTemplatePanel`）
+### カスタムテンプレートのクローン（`PveManager.tsx: CloneGuestPanel`）
 
-PVE シェルに入らず WebUI でテンプレートを取得できるよう、`GET /nodes/{node}/aplinfo`
-（`pveam available` 相当）でカタログを取得し、`POST /nodes/{node}/aplinfo` で
-ストレージへダウンロード（UPID 完了まで同期）。ダウンロード完了で OS テンプレート一覧を
-再フェッチし、上のドロップダウンに即時反映する。
+PVE 上で `pct template` / `qm template` 済みのゲストを `GET /api/pve/nodes/:node/templates/guests`
+（内部で `listGuests` の `template===1` 行をフィルタ）で一覧し、`POST /api/pve/clone`
+（`PveClient.cloneGuest` → `/nodes/{node}/{kind}/{vmid}/clone`）で新規 vmid に複製する。
+LXC は body に `hostname=`、QEMU は `name=` を入れる。`full=0` がリンククローン（既定）、
+リンク非対応ストレージのときだけフルにする。クローン成功後にチェックボックス ON なら
+`POST /api/settings/servers/entry` で `servers.local.yml` の `servers[]` に append し、
+`reloadInventory()` を呼んで即時反映する。新規 vmid は `GET /api/pve/nextid`
+（`/cluster/nextid`）で初期サジェスト。
+
+生 vztmpl 系（`GET/POST /nodes/{node}/aplinfo`、`DownloadTemplatePanel`）はカスタム
+テンプレートを作る前段の素材取得用に残してある（PVE シェルに入らず WebUI で完結させるため）。
 
 ### 履歴の一括削除（`db/deployments.ts: pruneInactiveDeployments`）
 
@@ -143,9 +151,15 @@ PVE シェルに入らず WebUI でテンプレートを取得できるよう、
 - **PVE 認証**: API トークン（`Authorization: PVEAPIToken=...`）。トークン認証なので
   CSRF トークン不要。自己署名証明書のため undici `Agent` で `rejectUnauthorized:false`。
 - **PVE 権限**: デプロイと復元だけなら `VM.Audit / VM.PowerMgmt / VM.Snapshot /
-  VM.Snapshot.Rollback` で足りる。VM/CT 管理機能を使う場合は `VM.Allocate /
-  VM.Config.* / Datastore.Audit / Datastore.AllocateSpace / Datastore.AllocateTemplate /
-  Sys.Audit` も必要（README.md 参照）。
+  VM.Snapshot.Rollback` で足りる。VM/CT 管理機能（クローン・削除・CPU/メモリ変更）を使う場合は
+  `VM.Allocate / VM.Clone / VM.Config.* / Datastore.Audit / Datastore.AllocateSpace /
+  Datastore.AllocateTemplate / Sys.Audit` も必要（README.md 参照）。
+- **テンプレートクローン方式**: 生 vztmpl から「ゼロから」LXC を作る経路は廃止した。事前に
+  `pct template` / `qm template` 済みのテンプレートを用意し、それをクローンするフローに統一。
+  PVE LXC は root SSH がデフォルト無効・生 vztmpl には root しかいない、という制約を回避する
+  ため、テンプレート側に一般ユーザ + パスワードなし sudo + Tailscale を焼き込んでおき、
+  inventory には焼き込んだユーザ名 + パスワードを登録する（パスワード SSH）。デプロイ側の
+  Docker 自動セットアップは `$SUDO` プレフィクスで書かれているのでそのまま動く。
 - **Docker の自動セットアップ**: ベースライン VM／CT に Tailscale だけが入っていることを前提と
   し、Docker は `ensureDockerScript()`（`services/deploy.ts`）が `get.docker.com` で初回のみ導入
   する。すべての docker コマンドは `$SUDO docker` で実行し、SSH ユーザーが root か非 root かを

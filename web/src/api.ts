@@ -176,12 +176,32 @@ export const api = {
       }),
     );
   },
-  async createLxc(params: CreateLxcParams): Promise<void> {
-    await json(
-      await fetch("/api/pve/lxc", {
+  async listTemplateGuests(node: string): Promise<TemplateGuest[]> {
+    const { templates } = await json<{ templates: TemplateGuest[] }>(
+      await fetch(`/api/pve/nodes/${node}/templates/guests`),
+    );
+    return templates;
+  },
+  async getNextVmid(): Promise<number> {
+    const { vmid } = await json<{ vmid: number }>(await fetch("/api/pve/nextid"));
+    return vmid;
+  },
+  async cloneGuest(params: CloneGuestParams): Promise<{ vmid: number; kind: "lxc" | "qemu" }> {
+    const res = await json<{ vmid: number; kind: "lxc" | "qemu" }>(
+      await fetch("/api/pve/clone", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
+      }),
+    );
+    return res;
+  },
+  async addServerEntry(entry: ServerEntryInput): Promise<void> {
+    await json(
+      await fetch("/api/settings/servers/entry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(entry),
       }),
     );
   },
@@ -251,21 +271,41 @@ export interface AvailableTemplate {
   description?: string;
 }
 
-export interface CreateLxcParams {
-  node: string;
+export interface TemplateGuest {
+  kind: "lxc" | "qemu";
   vmid: number;
-  ostemplate: string;
-  hostname?: string;
-  cores: number;
-  memory: number;
-  storage: string;
-  diskSize: number;
-  password?: string;
-  sshPublicKey?: string;
-  bridge: string;
-  ipConfig: string;
-  unprivileged: boolean;
-  start: boolean;
+  name?: string;
+}
+
+export interface CloneGuestParams {
+  node: string;
+  sourceKind: "lxc" | "qemu";
+  sourceVmid: number;
+  newVmid: number;
+  name: string;
+  full?: boolean;
+  storage?: string;
+  description?: string;
+  start?: boolean;
+}
+
+export interface ServerEntryInput {
+  name: string;
+  pveNode: string;
+  vmid: number;
+  kind: "lxc" | "qemu";
+  baselineSnapshot?: string;
+  appPort?: number;
+  healthPath?: string;
+  ssh: {
+    host: string;
+    port?: number;
+    user: string;
+    auth: "password" | "key";
+    password?: string;
+    privateKeyPath?: string;
+    passphrase?: string;
+  };
 }
 
 /**

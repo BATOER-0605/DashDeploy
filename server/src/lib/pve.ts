@@ -159,6 +159,7 @@ export class PveClient {
       status: string;
       cpus?: number;
       maxmem?: number;
+      template?: boolean;
     }[]
   > {
     const [lxc, qemu] = await Promise.all([
@@ -172,10 +173,31 @@ export class PveClient {
       status: String(g.status ?? ""),
       cpus: g.cpus as number | undefined,
       maxmem: g.maxmem as number | undefined,
+      // PVE returns template as 0/1 (number) or "0"/"1" (string).
+      template: Number(g.template ?? 0) === 1,
     });
     return [...lxc.map(mapRow("lxc")), ...qemu.map(mapRow("qemu"))].sort(
       (a, b) => a.vmid - b.vmid,
     );
+  }
+
+  /** Return only guests that have been converted to templates. */
+  async listTemplateGuests(node: string): Promise<
+    {
+      kind: GuestKind;
+      vmid: number;
+      name?: string;
+    }[]
+  > {
+    const guests = await this.listGuests(node);
+    return guests
+      .filter((g) => g.template)
+      .map((g) => ({ kind: g.kind, vmid: g.vmid, name: g.name }));
+  }
+
+  /** Ask the cluster for the next free vmid (>= 100). */
+  getNextVmid(): Promise<number> {
+    return this.request<string>("GET", `/cluster/nextid`).then((v) => Number(v));
   }
 
   listStorage(
@@ -224,11 +246,38 @@ export class PveClient {
 
   // --- Mutations ---
 
-  createLxc(
+  /**
+   * Clone an LXC template or VM template into a new guest.
+   * `name` becomes `hostname` for LXC and `name` for QEMU (the PVE API uses
+   * different keys for the two kinds even though semantics are identical).
+   * `full=false` requests a linked clone; PVE rejects this on storages that
+   * don't support snapshots, so the caller should be prepared to retry full.
+   */
+  cloneGuest(
     node: string,
-    params: Record<string, string | number>,
+    kind: GuestKind,
+    sourceVmid: number,
+    params: {
+      newid: number;
+      name?: string;
+      full?: boolean;
+      storage?: string;
+      target?: string;
+      description?: string;
+    },
   ): Promise<string> {
-    return this.request<string>("POST", `/nodes/${node}/lxc`, params);
+    const body: Record<string, string | number> = {
+      newid: params.newid,
+      full: params.full ? 1 : 0,
+    };
+    if (params.name) {
+      if (kind === "lxc") body.hostname = params.name;
+      else body.name = params.name;
+    }
+    if (params.storage) body.storage = params.storage;
+    if (params.target) body.target = params.target;
+    if (params.description) body.description = params.description;
+    return this.request<string>("POST", `/nodes/${node}/${kind}/${sourceVmid}/clone`, body);
   }
 
   deleteGuest(node: string, kind: GuestKind, vmid: number): Promise<string> {
