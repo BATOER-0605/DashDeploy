@@ -188,7 +188,13 @@ function CloneGuestPanel({
   const [storage, setStorage] = useState<string>("");
   const [start, setStart] = useState<boolean>(true);
 
-  const [registerInventory, setRegisterInventory] = useState<boolean>(true);
+  // Populated after a successful clone. While null, the registration block
+  // stays disabled. detectedIp is the guest's DHCP IPv4 (or null if PVE
+  // couldn't read it within ~30s — qemu-guest-agent missing, etc.).
+  const [cloneResult, setCloneResult] = useState<
+    { vmid: number; kind: "lxc" | "qemu"; detectedIp: string | null } | null
+  >(null);
+
   const [invName, setInvName] = useState<string>("");
   const [invHost, setInvHost] = useState<string>("");
   const [invPort, setInvPort] = useState<number>(22);
@@ -240,7 +246,7 @@ function CloneGuestPanel({
     contentsOf(s).includes(sourceKind === "qemu" ? "images" : "rootdir"),
   );
 
-  async function submit() {
+  async function runClone() {
     setError(null);
     if (!selectedTemplate) {
       setError("クローン元テンプレートを選択してください。");
@@ -253,12 +259,6 @@ function CloneGuestPanel({
     if (!name.trim()) {
       setError("名前 / ホスト名を入力してください。");
       return;
-    }
-    if (registerInventory) {
-      if (!invName.trim() || !invHost.trim() || !invUser.trim() || !invPassword) {
-        setError("inventory 登録セクションのサーバ名・SSHホスト・ユーザ・パスワードを入力してください。");
-        return;
-      }
     }
     setBusy(true);
     try {
@@ -273,34 +273,59 @@ function CloneGuestPanel({
       };
       if (storage) cloneParams.storage = storage;
       const result = await api.cloneGuest(cloneParams);
-      let msg = `${result.kind} ${result.vmid} (${name}) をクローンしました。`;
-      if (registerInventory) {
-        const entry: ServerEntryInput = {
-          name: invName.trim(),
-          pveNode: node,
-          vmid: result.vmid,
-          kind: result.kind,
-          baselineSnapshot: invBaseline.trim() || "clean",
-          ssh: {
-            host: invHost.trim(),
-            port: invPort || 22,
-            user: invUser.trim(),
-            auth: "password",
-            password: invPassword,
-          },
-        };
-        if (invAppPort && Number(invAppPort) > 0) entry.appPort = Number(invAppPort);
-        await api.addServerEntry(entry);
-        msg += ` inventory に "${entry.name}" を追加しました。`;
-      }
-      onCloned(msg);
-      // Refresh template list (cloned guest may itself become a template later).
+      setCloneResult(result);
+      // Pre-fill inventory fields from what we know. Host gets the DHCP IP
+      // we detected from PVE; the user is expected to replace it with the
+      // Tailscale IP after `tailscale up` runs inside the guest.
+      if (!invName.trim()) setInvName(name.trim());
+      setInvHost(result.detectedIp ?? "");
+      const ipMsg = result.detectedIp
+        ? `自動検出した DHCP IP: ${result.detectedIp}（後で Tailscale IP に手動で書き換えてください）`
+        : "IP の自動検出には失敗しました（VM は qemu-guest-agent が必要）。手動で入力してください。";
+      onCloned(`${result.kind} ${result.vmid} (${name}) をクローンしました。${ipMsg}`);
       reloadTemplates();
-      // Bump suggested vmid for next clone.
       api
         .getNextVmid()
         .then((v) => setNewVmid(v))
         .catch(() => {});
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function registerInInventory() {
+    setError(null);
+    if (!cloneResult) {
+      setError("先にクローンを実行してください。");
+      return;
+    }
+    if (!invName.trim() || !invHost.trim() || !invUser.trim() || !invPassword) {
+      setError("サーバ名・SSH ホスト・ユーザ・パスワードを入力してください。");
+      return;
+    }
+    setBusy(true);
+    try {
+      const entry: ServerEntryInput = {
+        name: invName.trim(),
+        pveNode: node,
+        vmid: cloneResult.vmid,
+        kind: cloneResult.kind,
+        baselineSnapshot: invBaseline.trim() || "clean",
+        ssh: {
+          host: invHost.trim(),
+          port: invPort || 22,
+          user: invUser.trim(),
+          auth: "password",
+          password: invPassword,
+        },
+      };
+      if (invAppPort && Number(invAppPort) > 0) entry.appPort = Number(invAppPort);
+      await api.addServerEntry(entry);
+      onCloned(`inventory に "${entry.name}" を追加しました。`);
+      setCloneResult(null);
+      setInvPassword("");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -390,78 +415,96 @@ function CloneGuestPanel({
         クローン完了後に起動
       </label>
 
-      <details className="card-inner" open={registerInventory} style={{ marginTop: "0.8rem" }}>
-        <summary>
-          <label className="checkbox" style={{ display: "inline-flex" }}>
-            <input
-              type="checkbox"
-              checked={registerInventory}
-              onChange={(e) => setRegisterInventory(e.target.checked)}
-            />
-            <strong>inventory（servers.local.yml）に登録する</strong>
-          </label>
-        </summary>
-
-        {registerInventory && (
-          <>
-            <p className="muted">
-              テンプレートに焼き込んだ一般ユーザのパスワード認証情報を入力します。
-              Tailscale IP は起動後に確認してから入力してください（後から
-              <code> servers.local.yml </code>を編集して差し替えても OK）。
-            </p>
-            <div className="field">
-              <label>サーバ名（inventory の name）</label>
-              <input type="text" value={invName} onChange={(e) => setInvName(e.target.value)} />
-            </div>
-            <div className="field">
-              <label>SSH ホスト（Tailscale IP 推奨）</label>
-              <input type="text" value={invHost} onChange={(e) => setInvHost(e.target.value)} />
-            </div>
-            <div className="field">
-              <label>SSH ポート</label>
-              <input
-                type="number"
-                value={invPort}
-                onChange={(e) => setInvPort(Number(e.target.value) || 22)}
-              />
-            </div>
-            <div className="field">
-              <label>SSH ユーザ（テンプレートに焼いた一般ユーザ）</label>
-              <input type="text" value={invUser} onChange={(e) => setInvUser(e.target.value)} />
-            </div>
-            <div className="field">
-              <label>SSH パスワード</label>
-              <input
-                type="password"
-                value={invPassword}
-                onChange={(e) => setInvPassword(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label>アプリポート（任意）</label>
-              <input
-                type="number"
-                value={invAppPort}
-                onChange={(e) =>
-                  setInvAppPort(e.target.value === "" ? "" : Number(e.target.value))
-                }
-              />
-            </div>
-            <div className="field">
-              <label>ベースラインスナップショット名</label>
-              <input
-                type="text"
-                value={invBaseline}
-                onChange={(e) => setInvBaseline(e.target.value)}
-              />
-            </div>
-          </>
-        )}
-      </details>
-
-      <button className="primary" disabled={busy} onClick={submit}>
-        {busy ? "クローン中…" : "クローン実行"}
+      <button className="primary" disabled={busy} onClick={runClone}>
+        {busy && !cloneResult ? "クローン中…" : "クローン実行"}
       </button>
+
+      {cloneResult && (
+        <details className="card-inner" open style={{ marginTop: "1rem" }}>
+          <summary>
+            <strong>
+              ステップ 2: inventory（servers.local.yml）に登録
+            </strong>{" "}
+            <span className="muted">
+              [{cloneResult.kind}] vmid={cloneResult.vmid}
+            </span>
+          </summary>
+
+          <p className="muted">
+            SSH ホスト欄にはクローン直後の DHCP IP を自動入力しました。
+            この時点ではゲスト内でまだ <code>tailscale up</code> が走っていないため、
+            これは Tailscale IP ではありません。ゲスト内で Tailnet 参加が完了したら、
+            この欄を Tailscale IP に書き換えてから登録するか、登録後に
+            <code> servers.local.yml </code>を直接編集してください。
+          </p>
+          {cloneResult.detectedIp === null && (
+            <p className="error">
+              IP の自動検出に失敗しました（LXC では数秒待って再起動、VM では
+              qemu-guest-agent が必要）。SSH ホストは手動で入力してください。
+            </p>
+          )}
+
+          <div className="field">
+            <label>サーバ名（inventory の name）</label>
+            <input type="text" value={invName} onChange={(e) => setInvName(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>SSH ホスト（自動検出 IP を仮で記入。Tailscale IP に書き換え推奨）</label>
+            <input type="text" value={invHost} onChange={(e) => setInvHost(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>SSH ポート</label>
+            <input
+              type="number"
+              value={invPort}
+              onChange={(e) => setInvPort(Number(e.target.value) || 22)}
+            />
+          </div>
+          <div className="field">
+            <label>SSH ユーザ（テンプレートに焼いた一般ユーザ）</label>
+            <input type="text" value={invUser} onChange={(e) => setInvUser(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>SSH パスワード</label>
+            <input
+              type="password"
+              value={invPassword}
+              onChange={(e) => setInvPassword(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label>アプリポート（任意）</label>
+            <input
+              type="number"
+              value={invAppPort}
+              onChange={(e) =>
+                setInvAppPort(e.target.value === "" ? "" : Number(e.target.value))
+              }
+            />
+          </div>
+          <div className="field">
+            <label>ベースラインスナップショット名</label>
+            <input
+              type="text"
+              value={invBaseline}
+              onChange={(e) => setInvBaseline(e.target.value)}
+            />
+          </div>
+
+          <button className="primary" disabled={busy} onClick={registerInInventory}>
+            {busy ? "登録中…" : "inventory に登録"}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setCloneResult(null)}
+            style={{ marginLeft: "0.4rem" }}
+          >
+            キャンセル
+          </button>
+        </details>
+      )}
+
       {error && <p className="error">{error}</p>}
     </details>
   );

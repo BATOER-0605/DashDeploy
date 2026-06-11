@@ -124,8 +124,13 @@ PVE 上で `pct template` / `qm template` 済みのゲストを `GET /api/pve/no
 （内部で `listGuests` の `template===1` 行をフィルタ）で一覧し、`POST /api/pve/clone`
 （`PveClient.cloneGuest` → `/nodes/{node}/{kind}/{vmid}/clone`）で新規 vmid に複製する。
 LXC は body に `hostname=`、QEMU は `name=` を入れる。`full=0` がリンククローン（既定）、
-リンク非対応ストレージのときだけフルにする。クローン成功後にチェックボックス ON なら
-`POST /api/settings/servers/entry` で `servers.local.yml` の `servers[]` に append し、
+リンク非対応ストレージのときだけフルにする。クローン後 `start=true` なら起動して
+`waitForGuestIp()`（LXC は `/lxc/{vmid}/interfaces`、QEMU は
+`/qemu/{vmid}/agent/network-get-interfaces` を ~30s ポーリング）で DHCP IP を検出し、
+`{ vmid, kind, detectedIp }` を返す。WebUI はこれを 2 ステップ UI にしてあり、ステップ 1
+（クローン）完了後にステップ 2（inventory 登録）が現れ、SSH ホスト欄には `detectedIp` を
+仮で流し込む（ユーザはゲスト内で `tailscale up` を打ってから Tailscale IP に書き換える想定）。
+登録は `POST /api/settings/servers/entry` で `servers.local.yml` の `servers[]` に append し、
 `reloadInventory()` を呼んで即時反映する。新規 vmid は `GET /api/pve/nextid`
 （`/cluster/nextid`）で初期サジェスト。
 

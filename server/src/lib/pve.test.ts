@@ -224,6 +224,62 @@ test("listTemplateGuests returns only template-marked guests", async () => {
   ]);
 });
 
+test("detectGuestIp picks first non-loopback inet from lxc interfaces", async () => {
+  const client = new PveClient({
+    ...baseOpts,
+    fetchImpl: mockFetch((url) => {
+      if (url.endsWith("/nodes/pve/lxc/101/interfaces")) {
+        return json([
+          { name: "lo", inet: "127.0.0.1/8" },
+          { name: "eth0", inet: "10.0.0.42/24" },
+        ]);
+      }
+      throw new Error(`unexpected url ${url}`);
+    }),
+  });
+  const ip = await client.detectGuestIp("pve", "lxc", 101);
+  assert.equal(ip, "10.0.0.42");
+});
+
+test("detectGuestIp returns null when qemu-guest-agent is not responding", async () => {
+  const client = new PveClient({
+    ...baseOpts,
+    fetchImpl: mockFetch(
+      () =>
+        new Response("agent not running", { status: 500, statusText: "Internal Server Error" }),
+    ),
+  });
+  const ip = await client.detectGuestIp("pve", "qemu", 201);
+  assert.equal(ip, null);
+});
+
+test("detectGuestIp parses qemu agent network-get-interfaces shape", async () => {
+  const client = new PveClient({
+    ...baseOpts,
+    fetchImpl: mockFetch((url) => {
+      if (
+        url.endsWith("/nodes/pve/qemu/201/agent/network-get-interfaces")
+      ) {
+        return json({
+          result: [
+            { name: "lo", "ip-addresses": [{ "ip-address-type": "ipv4", "ip-address": "127.0.0.1" }] },
+            {
+              name: "ens18",
+              "ip-addresses": [
+                { "ip-address-type": "ipv6", "ip-address": "fe80::1" },
+                { "ip-address-type": "ipv4", "ip-address": "192.168.1.50" },
+              ],
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected url ${url}`);
+    }),
+  });
+  const ip = await client.detectGuestIp("pve", "qemu", 201);
+  assert.equal(ip, "192.168.1.50");
+});
+
 test("getNextVmid queries /cluster/nextid and parses as number", async () => {
   let seen = "";
   const client = new PveClient({

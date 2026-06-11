@@ -100,6 +100,8 @@ export async function pveRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Clone an LXC/VM template into a new guest, optionally starting it.
+  // When start=true, also attempts to detect the guest's DHCP IP (best-effort,
+  // ~30s window) so the WebUI can pre-fill the inventory SSH host field.
   app.post("/api/pve/clone", async (req, reply) => {
     const parsed = cloneGuestSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -116,11 +118,13 @@ export async function pveRoutes(app: FastifyInstance): Promise<void> {
         description: p.description,
       });
       await pve().waitForTask(p.node, upid);
+      let detectedIp: string | null = null;
       if (p.start) {
         const startUpid = await pve().start(p.node, p.sourceKind, p.newVmid);
         await pve().waitForTask(p.node, startUpid);
+        detectedIp = await pve().waitForGuestIp(p.node, p.sourceKind, p.newVmid);
       }
-      return { ok: true, vmid: p.newVmid, kind: p.sourceKind };
+      return { ok: true, vmid: p.newVmid, kind: p.sourceKind, detectedIp };
     } catch (err) {
       reply.code(500);
       return { ok: false, error: (err as Error).message };

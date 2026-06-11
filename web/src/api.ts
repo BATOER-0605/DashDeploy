@@ -186,8 +186,14 @@ export const api = {
     const { vmid } = await json<{ vmid: number }>(await fetch("/api/pve/nextid"));
     return vmid;
   },
-  async cloneGuest(params: CloneGuestParams): Promise<{ vmid: number; kind: "lxc" | "qemu" }> {
-    const res = await json<{ vmid: number; kind: "lxc" | "qemu" }>(
+  async cloneGuest(
+    params: CloneGuestParams,
+  ): Promise<{ vmid: number; kind: "lxc" | "qemu"; detectedIp: string | null }> {
+    const res = await json<{
+      vmid: number;
+      kind: "lxc" | "qemu";
+      detectedIp: string | null;
+    }>(
       await fetch("/api/pve/clone", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
