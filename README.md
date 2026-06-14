@@ -13,7 +13,9 @@ GitHub のリポジトリを自宅の Proxmox VE（PVE）の LXC コンテナ／
 - **環境変数** (`.env`): GitHub PAT / PVE トークン / Tailscale API キー など
 - **サーバ台帳** (`config/servers.local.yml`): YAML エディタで直接編集
 - **Tailscale デバイス**: API 経由で一覧を取得し、IP をコピー
-- **PVE VM/CT 管理**: 新規 LXC コンテナの作成、削除、CPU/メモリ変更
+- **PVE VM/CT 管理**: **カスタムテンプレートのクローン**で新規 LXC/VM を作成、削除、CPU/メモリ変更。
+  クローン完了時に inventory（`servers.local.yml`）への登録もまとめて行える。
+  生 vztmpl のダウンロード機能はカスタムテンプレートを作る前段の素材取得用に残してある。
 
 設定の変更後は「設定をリロード」ボタンを押せば、プロセス再起動なしで反映されます
 （`BIND_HOST` と `PORT` だけは systemctl restart が必要）。
@@ -41,10 +43,50 @@ GitHub のリポジトリを自宅の Proxmox VE（PVE）の LXC コンテナ／
 
 - Node.js 20 以上
 - API トークンを発行した Proxmox VE 8 または 9 のホスト（クラスタ可）
-- LXC／QEMU ターゲット 1 台以上。**事前に必要なのは Tailscale 導入とベースラインスナップショット
-  （`clean`）のみ**。SSH ユーザーは root であるか、`sudo` を**パスワードなし**で実行できること
-  （`/etc/sudoers.d/<user>` に `<user> ALL=(ALL) NOPASSWD:ALL` 等）。Docker はデプロイ時に自動導入
+- **カスタムテンプレート 1 つ以上**（後述）。DashDeploy は PVE 上にテンプレ化された LXC / VM を
+  クローンする方式に統一されており、生 vztmpl から「ゼロから」LXC/VM を作る経路は持ちません
 - リポジトリの読み取り／clone 権限を持つ GitHub Personal Access Token（PAT）
+
+### カスタムテンプレートの作り方（事前準備）
+
+DashDeploy がクローン元とするテンプレートには、最低限**一般ユーザ + パスワードなし sudo + Tailscale**
+を焼き込んでおきます。Docker も入れておけば初回デプロイが速くなります（無くてもデプロイ時に
+DashDeploy が `get.docker.com` で自動導入します）。
+
+**LXC のカスタムテンプレート**:
+
+```sh
+# 1. 生 vztmpl から CT を作成（DashDeploy 設定画面の「OS テンプレート（vztmpl）をダウンロード」で取得可能）
+pct create 9000 local:vztmpl/ubuntu-24.04-standard_24.04-1_amd64.tar.zst \
+  --hostname dashdeploy-tmpl --cores 1 --memory 512 --rootfs local-lvm:8 \
+  --net0 name=eth0,bridge=vmbr0,ip=dhcp --unprivileged 1 --start 1
+
+# 2. CT 内で一般ユーザ + sudo + Tailscale（+ Docker）をセットアップ
+pct exec 9000 -- bash -c '
+  set -e
+  useradd -m -s /bin/bash -G sudo dashdeploy
+  echo "dashdeploy:CHANGE_ME" | chpasswd
+  echo "dashdeploy ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dashdeploy
+  apt-get update && apt-get install -y curl
+  curl -fsSL https://tailscale.com/install.sh | sh
+  # 任意: Docker も焼いておくならここで curl -fsSL https://get.docker.com | sh
+'
+
+# 3. （任意）テンプレ内で `tailscale up --authkey=tskey-...` を一度実行して tailnet に参加させてから停止
+# 4. 停止してテンプレート化
+pct shutdown 9000
+pct template 9000
+```
+
+**VM のカスタムテンプレート**: ほぼ同じ手順を VM 内で実施し、最後に `qm shutdown 9001 && qm template 9001`。
+
+これで PVE 設定画面 → **PVE VM/CT 管理** → **テンプレートをクローンして新規 LXC/VM を作成** の
+ドロップダウンに当該テンプレートが現れ、ワンクリックで複製できるようになります。
+
+> SSH ユーザーが root の場合はパスワードなし sudo は不要ですが、PVE の LXC では既定で root の
+> パスワード SSH が無効なため、上記のように**一般ユーザ + パスワードなし sudo**にしておくのが
+> 確実です。デプロイ側の Docker セットアップは `$SUDO docker` 形式で書かれているため、
+> root でも非 root（パスワードなし sudo）でもそのまま動きます。
 
 ## セットアップ
 
@@ -120,7 +162,8 @@ healthPath: /healthz
 ## スナップショットと復元
 
 - 各ターゲットには、あらかじめ「クリーンな状態」のスナップショット（既定名 `clean`）を
-  作成しておきます。
+  作成しておきます。クローン直後の何も触っていない状態で `pct snapshot <vmid> clean`
+  （LXC）／`qm snapshot <vmid> clean`（VM）を 1 回打っておけば OK。
 - **復元** は次の手順で行われます（コールドスナップショット復元）。
   1. 対象ゲストが稼働中ならパワーオフする
   2. パワーオフ完了を待つ
@@ -143,9 +186,9 @@ healthPath: /healthz
   **デプロイと復元のみ**（最小構成）— 対象ゲスト（例: `/vms/121`）に対して:
   - `VM.Audit`、`VM.PowerMgmt`、`VM.Snapshot`、`VM.Snapshot.Rollback`
 
-  **設定画面の「VM/CT 管理」機能（作成・削除・CPU/メモリ変更）も使う場合**は、これらに加えて:
-  - `/vms` に対して `VM.Allocate`、`VM.Config.CPU`、`VM.Config.Memory`、`VM.Config.Disk`、
-    `VM.Config.Network`、`VM.Config.Options`
+  **設定画面の「VM/CT 管理」機能（クローン・削除・CPU/メモリ変更）も使う場合**は、これらに加えて:
+  - `/vms` に対して `VM.Allocate`、`VM.Clone`、`VM.Config.CPU`、`VM.Config.Memory`、
+    `VM.Config.Disk`、`VM.Config.Network`、`VM.Config.Options`
   - `/storage`（または該当の `/storage/<name>`）に対して `Datastore.Audit`、
     `Datastore.AllocateSpace`、`Datastore.AllocateTemplate`
   - `/` に対して `Sys.Audit`（ノード一覧の取得）
@@ -155,7 +198,7 @@ healthPath: /healthz
 
   ```sh
   pveum role add DashDeployFull -privs \
-    "VM.Audit,VM.PowerMgmt,VM.Snapshot,VM.Snapshot.Rollback,VM.Allocate,VM.Config.CPU,VM.Config.Memory,VM.Config.Disk,VM.Config.Network,VM.Config.Options,Datastore.Audit,Datastore.AllocateSpace,Datastore.AllocateTemplate,Sys.Audit"
+    "VM.Audit,VM.PowerMgmt,VM.Snapshot,VM.Snapshot.Rollback,VM.Allocate,VM.Clone,VM.Config.CPU,VM.Config.Memory,VM.Config.Disk,VM.Config.Network,VM.Config.Options,Datastore.Audit,Datastore.AllocateSpace,Datastore.AllocateTemplate,Sys.Audit"
   pveum acl modify / --tokens 'root@pam!dashdeploy' --roles DashDeployFull
   ```
 - `PVE_TLS_REJECT_UNAUTHORIZED=false` は自宅 PVE の自己署名証明書向けの既定値です。

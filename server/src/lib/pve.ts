@@ -34,6 +34,15 @@ export interface PveSnapshot {
 
 export class PveError extends Error {}
 
+function isGlobalIpv4(ip: string): boolean {
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return false;
+  const [a, b] = ip.split(".").map(Number);
+  if (a === 127) return false; // loopback
+  if (a === 169 && b === 254) return false; // link-local
+  if (a === 0) return false;
+  return true;
+}
+
 export class PveClient {
   private readonly bases: string[];
   private readonly authHeader: string;
@@ -159,6 +168,7 @@ export class PveClient {
       status: string;
       cpus?: number;
       maxmem?: number;
+      template?: boolean;
     }[]
   > {
     const [lxc, qemu] = await Promise.all([
@@ -172,10 +182,31 @@ export class PveClient {
       status: String(g.status ?? ""),
       cpus: g.cpus as number | undefined,
       maxmem: g.maxmem as number | undefined,
+      // PVE returns template as 0/1 (number) or "0"/"1" (string).
+      template: Number(g.template ?? 0) === 1,
     });
     return [...lxc.map(mapRow("lxc")), ...qemu.map(mapRow("qemu"))].sort(
       (a, b) => a.vmid - b.vmid,
     );
+  }
+
+  /** Return only guests that have been converted to templates. */
+  async listTemplateGuests(node: string): Promise<
+    {
+      kind: GuestKind;
+      vmid: number;
+      name?: string;
+    }[]
+  > {
+    const guests = await this.listGuests(node);
+    return guests
+      .filter((g) => g.template)
+      .map((g) => ({ kind: g.kind, vmid: g.vmid, name: g.name }));
+  }
+
+  /** Ask the cluster for the next free vmid (>= 100). */
+  getNextVmid(): Promise<number> {
+    return this.request<string>("GET", `/cluster/nextid`).then((v) => Number(v));
   }
 
   listStorage(
@@ -224,11 +255,38 @@ export class PveClient {
 
   // --- Mutations ---
 
-  createLxc(
+  /**
+   * Clone an LXC template or VM template into a new guest.
+   * `name` becomes `hostname` for LXC and `name` for QEMU (the PVE API uses
+   * different keys for the two kinds even though semantics are identical).
+   * `full=false` requests a linked clone; PVE rejects this on storages that
+   * don't support snapshots, so the caller should be prepared to retry full.
+   */
+  cloneGuest(
     node: string,
-    params: Record<string, string | number>,
+    kind: GuestKind,
+    sourceVmid: number,
+    params: {
+      newid: number;
+      name?: string;
+      full?: boolean;
+      storage?: string;
+      target?: string;
+      description?: string;
+    },
   ): Promise<string> {
-    return this.request<string>("POST", `/nodes/${node}/lxc`, params);
+    const body: Record<string, string | number> = {
+      newid: params.newid,
+      full: params.full ? 1 : 0,
+    };
+    if (params.name) {
+      if (kind === "lxc") body.hostname = params.name;
+      else body.name = params.name;
+    }
+    if (params.storage) body.storage = params.storage;
+    if (params.target) body.target = params.target;
+    if (params.description) body.description = params.description;
+    return this.request<string>("POST", `/nodes/${node}/${kind}/${sourceVmid}/clone`, body);
   }
 
   deleteGuest(node: string, kind: GuestKind, vmid: number): Promise<string> {
@@ -244,6 +302,80 @@ export class PveClient {
     // PUT for lxc, POST for qemu config.
     const method = kind === "qemu" ? "POST" : "PUT";
     return this.request<void>(method, `/nodes/${node}/${kind}/${vmid}/config`, config);
+  }
+
+  /**
+   * Best-effort detection of the guest's current IPv4 address.
+   * Returns the first non-loopback, non-link-local IPv4 found, or null.
+   *
+   * - LXC: `/nodes/{node}/lxc/{vmid}/interfaces` returns interface rows with
+   *   an `inet` field like "10.0.0.5/24". Available without any guest agent.
+   * - QEMU: `/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces` requires
+   *   qemu-guest-agent to be installed AND running in the VM. Returns null
+   *   if the agent isn't responding.
+   *
+   * Used right after clone+start to pre-fill the inventory SSH host field
+   * with whatever DHCP address the guest got. The user typically replaces
+   * this with a Tailscale IP later, once `tailscale up` has been run inside.
+   */
+  async detectGuestIp(node: string, kind: GuestKind, vmid: number): Promise<string | null> {
+    try {
+      if (kind === "lxc") {
+        const rows = await this.request<Record<string, unknown>[]>(
+          "GET",
+          `/nodes/${node}/lxc/${vmid}/interfaces`,
+        );
+        for (const row of rows ?? []) {
+          const name = String(row.name ?? "");
+          if (name === "lo") continue;
+          const inet = (row.inet as string | undefined) ?? "";
+          const ip = inet.split("/")[0]?.trim();
+          if (ip && isGlobalIpv4(ip)) return ip;
+        }
+        return null;
+      }
+      // qemu agent
+      const res = await this.request<{ result?: Record<string, unknown>[] }>(
+        "GET",
+        `/nodes/${node}/qemu/${vmid}/agent/network-get-interfaces`,
+      );
+      for (const row of res?.result ?? []) {
+        const name = String(row.name ?? "");
+        if (name === "lo" || name.startsWith("lo")) continue;
+        const addrs = (row["ip-addresses"] as Record<string, unknown>[] | undefined) ?? [];
+        for (const a of addrs) {
+          if (a["ip-address-type"] !== "ipv4") continue;
+          const ip = String(a["ip-address"] ?? "");
+          if (ip && isGlobalIpv4(ip)) return ip;
+        }
+      }
+      return null;
+    } catch {
+      // 500 from the qemu agent endpoint (agent not running) or any other
+      // transient failure — treat as "couldn't detect", let the caller proceed.
+      return null;
+    }
+  }
+
+  /**
+   * Poll detectGuestIp until it returns a non-null value or the deadline.
+   * Returns null on timeout. DHCP often takes a few seconds to settle after
+   * boot, so the default deadline is ~30s with a 3s interval.
+   */
+  async waitForGuestIp(
+    node: string,
+    kind: GuestKind,
+    vmid: number,
+    opts: { timeoutMs?: number; intervalMs?: number } = {},
+  ): Promise<string | null> {
+    const deadline = Date.now() + (opts.timeoutMs ?? 30_000);
+    const interval = opts.intervalMs ?? 3_000;
+    for (;;) {
+      const ip = await this.detectGuestIp(node, kind, vmid);
+      if (ip) return ip;
+      if (Date.now() > deadline) return null;
+      await new Promise((r) => setTimeout(r, interval));
+    }
   }
 
   /**

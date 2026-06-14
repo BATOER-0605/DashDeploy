@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import {
   api,
   type AvailableTemplate,
-  type CreateLxcParams,
+  type CloneGuestParams,
   type PveGuest,
   type PveNode,
   type PveStorage,
-  type PveStorageVolume,
+  type ServerEntryInput,
+  type TemplateGuest,
 } from "../api.js";
 
 export function PveManager() {
@@ -134,13 +135,23 @@ export function PveManager() {
       </table>
 
       {selectedNode && (
-        <CreateLxcForm
+        <CloneGuestPanel
           node={selectedNode}
-          onCreated={() => {
-            setNotice("LXC を作成しました。");
+          onCloned={(msg) => {
+            setNotice(msg);
             refreshGuests();
           }}
         />
+      )}
+
+      {selectedNode && (
+        <details className="card-inner" style={{ marginTop: "1rem" }}>
+          <summary>
+            <strong>OS テンプレート（vztmpl）をダウンロード</strong>{" "}
+            <span className="muted">— カスタム LXC テンプレートを作る前段で使います</span>
+          </summary>
+          <RawTemplateDownload node={selectedNode} />
+        </details>
       )}
     </div>
   );
@@ -157,183 +168,203 @@ function contentsOf(s: PveStorage): string[] {
   return [];
 }
 
-function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => void }) {
-  const [storages, setStorages] = useState<PveStorage[]>([]);
-  const [storagesLoaded, setStoragesLoaded] = useState(false);
-  const [templates, setTemplates] = useState<PveStorageVolume[]>([]);
+function CloneGuestPanel({
+  node,
+  onCloned,
+}: {
+  node: string;
+  onCloned: (msg: string) => void;
+}) {
+  const [templates, setTemplates] = useState<TemplateGuest[]>([]);
   const [templatesLoaded, setTemplatesLoaded] = useState(false);
+  const [storages, setStorages] = useState<PveStorage[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [templateStorage, setTemplateStorage] = useState<string>("");
-  const [form, setForm] = useState<CreateLxcParams>({
-    node,
-    vmid: 200,
-    ostemplate: "",
-    hostname: "dashdeploy-target",
-    cores: 1,
-    memory: 1024,
-    storage: "",
-    diskSize: 8,
-    bridge: "vmbr0",
-    ipConfig: "dhcp",
-    unprivileged: true,
-    start: false,
-  });
+  const [busy, setBusy] = useState(false);
 
-  const vztmplStorages = storages.filter((s) => contentsOf(s).includes("vztmpl"));
-  const rootStorages = storages.filter((s) => contentsOf(s).includes("rootdir"));
+  const [sourceKey, setSourceKey] = useState<string>("");
+  const [newVmid, setNewVmid] = useState<number | "">("");
+  const [name, setName] = useState<string>("dashdeploy-target");
+  const [full, setFull] = useState<boolean>(false);
+  const [storage, setStorage] = useState<string>("");
+  const [start, setStart] = useState<boolean>(true);
 
-  useEffect(() => {
-    setForm((f) => ({ ...f, node }));
-    setStoragesLoaded(false);
-    api
-      .listPveStorage(node)
-      .then((s) => {
-        setStorages(s);
-        setStoragesLoaded(true);
-      })
-      .catch((e) => {
-        setError(String(e));
-        setStoragesLoaded(true);
-      });
-  }, [node]);
+  // Populated after a successful clone. While null, the registration block
+  // stays disabled. detectedIp is the guest's DHCP IPv4 (or null if PVE
+  // couldn't read it within ~30s — qemu-guest-agent missing, etc.).
+  const [cloneResult, setCloneResult] = useState<
+    { vmid: number; kind: "lxc" | "qemu"; detectedIp: string | null } | null
+  >(null);
 
-  // Once storages load, auto-pick the first storage that supports vztmpl
-  // (templates) and rootdir (LXC rootfs) so the dropdowns aren't empty
-  // pointing at "local"/"local-lvm" names that don't exist on this PVE.
-  useEffect(() => {
-    if (!storagesLoaded) return;
-    if (vztmplStorages.length > 0 && !vztmplStorages.find((s) => s.storage === templateStorage)) {
-      setTemplateStorage(vztmplStorages[0].storage);
-    }
-    if (rootStorages.length > 0 && !rootStorages.find((s) => s.storage === form.storage)) {
-      setForm((f) => ({ ...f, storage: rootStorages[0].storage }));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storagesLoaded, storages]);
+  const [invName, setInvName] = useState<string>("");
+  const [invHost, setInvHost] = useState<string>("");
+  const [invPort, setInvPort] = useState<number>(22);
+  const [invUser, setInvUser] = useState<string>("");
+  const [invPassword, setInvPassword] = useState<string>("");
+  const [invAppPort, setInvAppPort] = useState<number | "">("");
+  const [invBaseline, setInvBaseline] = useState<string>("clean");
 
   const reloadTemplates = useCallback(() => {
-    if (!templateStorage) {
-      setTemplates([]);
-      setTemplatesLoaded(false);
-      return;
-    }
     setTemplatesLoaded(false);
     api
-      .listPveStorageContent(node, templateStorage, "vztmpl")
+      .listTemplateGuests(node)
       .then((t) => {
-        // Defensive client-side filter: only keep entries that actually look
-        // like LXC templates (`<storage>:vztmpl/<file>`) — PVE versions vary
-        // in how strictly the `?content=vztmpl` query param filters.
-        const filtered = t.filter(
-          (v) => v.content === "vztmpl" || /\/vztmpl\//.test(v.volid),
-        );
-        setTemplates(filtered);
+        setTemplates(t);
         setTemplatesLoaded(true);
-        setForm((f) =>
-          filtered.find((v) => v.volid === f.ostemplate) ? f : { ...f, ostemplate: "" },
-        );
+        if (t.length > 0 && !t.find((x) => `${x.kind}:${x.vmid}` === sourceKey)) {
+          setSourceKey(`${t[0].kind}:${t[0].vmid}`);
+        }
       })
       .catch((e) => {
         setError(String(e));
         setTemplatesLoaded(true);
       });
-  }, [node, templateStorage]);
+    // sourceKey intentionally omitted to avoid re-pinning during user edits
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node]);
 
   useEffect(() => {
     reloadTemplates();
-  }, [reloadTemplates]);
+    api
+      .listPveStorage(node)
+      .then(setStorages)
+      .catch((e) => setError(String(e)));
+    api
+      .getNextVmid()
+      .then((v) => setNewVmid(v))
+      .catch(() => {
+        /* non-fatal: user can type a vmid manually */
+      });
+  }, [node, reloadTemplates]);
 
-  async function submit() {
-    if (!form.ostemplate) {
-      setError("OS テンプレートを選択してください。");
-      return;
-    }
-    if (!form.storage) {
-      setError("ルートディスクのストレージを選択してください。");
-      return;
-    }
+  useEffect(() => {
+    setInvName(name);
+  }, [name]);
+
+  const selectedTemplate = templates.find((t) => `${t.kind}:${t.vmid}` === sourceKey);
+  const sourceKind = selectedTemplate?.kind;
+  const cloneableStorages = storages.filter((s) =>
+    contentsOf(s).includes(sourceKind === "qemu" ? "images" : "rootdir"),
+  );
+
+  async function runClone() {
     setError(null);
-    setCreating(true);
+    if (!selectedTemplate) {
+      setError("クローン元テンプレートを選択してください。");
+      return;
+    }
+    if (!newVmid || Number(newVmid) <= 0) {
+      setError("新規 VMID を指定してください。");
+      return;
+    }
+    if (!name.trim()) {
+      setError("名前 / ホスト名を入力してください。");
+      return;
+    }
+    setBusy(true);
     try {
-      await api.createLxc(form);
-      onCreated();
+      const cloneParams: CloneGuestParams = {
+        node,
+        sourceKind: selectedTemplate.kind,
+        sourceVmid: selectedTemplate.vmid,
+        newVmid: Number(newVmid),
+        name: name.trim(),
+        full,
+        start,
+      };
+      if (storage) cloneParams.storage = storage;
+      const result = await api.cloneGuest(cloneParams);
+      setCloneResult(result);
+      // Pre-fill inventory fields from what we know. Host gets the DHCP IP
+      // we detected from PVE; the user is expected to replace it with the
+      // Tailscale IP after `tailscale up` runs inside the guest.
+      if (!invName.trim()) setInvName(name.trim());
+      setInvHost(result.detectedIp ?? "");
+      const ipMsg = result.detectedIp
+        ? `自動検出した DHCP IP: ${result.detectedIp}（後で Tailscale IP に手動で書き換えてください）`
+        : "IP の自動検出には失敗しました（VM は qemu-guest-agent が必要）。手動で入力してください。";
+      onCloned(`${result.kind} ${result.vmid} (${name}) をクローンしました。${ipMsg}`);
+      reloadTemplates();
+      api
+        .getNextVmid()
+        .then((v) => setNewVmid(v))
+        .catch(() => {});
     } catch (e) {
       setError(String(e));
     } finally {
-      setCreating(false);
+      setBusy(false);
+    }
+  }
+
+  async function registerInInventory() {
+    setError(null);
+    if (!cloneResult) {
+      setError("先にクローンを実行してください。");
+      return;
+    }
+    if (!invName.trim() || !invHost.trim() || !invUser.trim() || !invPassword) {
+      setError("サーバ名・SSH ホスト・ユーザ・パスワードを入力してください。");
+      return;
+    }
+    setBusy(true);
+    try {
+      const entry: ServerEntryInput = {
+        name: invName.trim(),
+        pveNode: node,
+        vmid: cloneResult.vmid,
+        kind: cloneResult.kind,
+        baselineSnapshot: invBaseline.trim() || "clean",
+        ssh: {
+          host: invHost.trim(),
+          port: invPort || 22,
+          user: invUser.trim(),
+          auth: "password",
+          password: invPassword,
+        },
+      };
+      if (invAppPort && Number(invAppPort) > 0) entry.appPort = Number(invAppPort);
+      await api.addServerEntry(entry);
+      onCloned(`inventory に "${entry.name}" を追加しました。`);
+      setCloneResult(null);
+      setInvPassword("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
     <details className="card-inner" open>
-      <summary><strong>新規 LXC コンテナ作成</strong></summary>
+      <summary><strong>テンプレートをクローンして新規 LXC/VM を作成</strong></summary>
 
-      {storagesLoaded && vztmplStorages.length === 0 && (
-        <p className="error">
-          このノードに vztmpl 対応ストレージが見つかりません。PVE のデータセンター設定で
-          ストレージの「コンテンツ」に <code>vztmpl</code> を追加してください。
-        </p>
-      )}
+      <p className="muted" style={{ marginTop: "0.4rem" }}>
+        クローン元は PVE 上で <code>pct template</code> / <code>qm template</code> 済みの
+        ゲストです。一般ユーザ + sudo + Tailscale（推奨: Docker）を入れたものをテンプレ化して
+        おき、ここから複製してください。
+      </p>
 
-      <div className="field">
-        <label>VMID</label>
-        <input
-          type="number"
-          value={form.vmid}
-          onChange={(e) => setForm({ ...form, vmid: Number(e.target.value) })}
-        />
-      </div>
-      <div className="field">
-        <label>ホスト名</label>
-        <input
-          type="text"
-          value={form.hostname ?? ""}
-          onChange={(e) => setForm({ ...form, hostname: e.target.value })}
-        />
-      </div>
-
-      <div className="field">
-        <label>テンプレート格納ストレージ</label>
-        <select value={templateStorage} onChange={(e) => setTemplateStorage(e.target.value)}>
-          <option value="">— ストレージを選択 —</option>
-          {vztmplStorages.map((s) => (
-            <option key={s.storage} value={s.storage}>
-              {s.storage}
-            </option>
-          ))}
-        </select>
-      </div>
       <div className="field">
         <label>
-          OS テンプレート{" "}
-          <span className="muted">
-            （{templates.length} 件
-            {templatesLoaded && templateStorage && templates.length === 0
-              ? "／下のダウンロード欄から取得できます"
-              : ""}
-            ）
-          </span>
+          クローン元テンプレート{" "}
+          <span className="muted">（{templates.length} 件）</span>
         </label>
         <div style={{ display: "flex", gap: "0.4rem" }}>
           <select
-            value={form.ostemplate}
-            onChange={(e) => setForm({ ...form, ostemplate: e.target.value })}
-            disabled={!templateStorage || templates.length === 0}
+            value={sourceKey}
+            onChange={(e) => setSourceKey(e.target.value)}
+            disabled={!templatesLoaded || templates.length === 0}
             style={{ flex: 1 }}
           >
             <option value="">
-              {!templateStorage
-                ? "— まずストレージを選択 —"
-                : !templatesLoaded
-                  ? "— 読み込み中 —"
-                  : templates.length === 0
-                    ? "— テンプレートが見つかりません —"
-                    : "— テンプレートを選択 —"}
+              {!templatesLoaded
+                ? "— 読み込み中 —"
+                : templates.length === 0
+                  ? "— テンプレートがありません（PVE で pct template / qm template 実行が必要） —"
+                  : "— テンプレートを選択 —"}
             </option>
             {templates.map((t) => (
-              <option key={t.volid} value={t.volid}>
-                {t.volid}
+              <option key={`${t.kind}:${t.vmid}`} value={`${t.kind}:${t.vmid}`}>
+                [{t.kind}] {t.vmid} {t.name ?? ""}
               </option>
             ))}
           </select>
@@ -343,115 +374,171 @@ function CreateLxcForm({ node, onCreated }: { node: string; onCreated: () => voi
         </div>
       </div>
 
-      {templateStorage && (
-        <DownloadTemplatePanel
-          node={node}
-          storage={templateStorage}
-          onDownloaded={reloadTemplates}
-        />
-      )}
-
       <div className="field">
-        <label>CPU コア</label>
+        <label>新規 VMID</label>
         <input
           type="number"
-          value={form.cores}
-          onChange={(e) => setForm({ ...form, cores: Number(e.target.value) })}
+          value={newVmid}
+          onChange={(e) => setNewVmid(e.target.value === "" ? "" : Number(e.target.value))}
         />
       </div>
       <div className="field">
-        <label>メモリ (MB)</label>
-        <input
-          type="number"
-          value={form.memory}
-          onChange={(e) => setForm({ ...form, memory: Number(e.target.value) })}
-        />
+        <label>名前 / ホスト名</label>
+        <input type="text" value={name} onChange={(e) => setName(e.target.value)} />
       </div>
 
       <div className="field">
         <label>
-          ルートディスク ストレージ
-          {storagesLoaded && rootStorages.length === 0 && (
-            <span className="muted">
-              （rootdir 対応ストレージがありません。PVE のストレージ設定で
-              「コンテンツ」に <code>rootdir</code> を追加してください）
-            </span>
-          )}
+          ターゲットストレージ{" "}
+          <span className="muted">（未指定ならテンプレートのストレージを継承）</span>
         </label>
-        <select value={form.storage} onChange={(e) => setForm({ ...form, storage: e.target.value })}>
-          <option value="">— ストレージを選択 —</option>
-          {rootStorages.map((s) => (
+        <select value={storage} onChange={(e) => setStorage(e.target.value)}>
+          <option value="">— 継承 —</option>
+          {cloneableStorages.map((s) => (
             <option key={s.storage} value={s.storage}>
               {s.storage}
             </option>
           ))}
         </select>
       </div>
-      <div className="field">
-        <label>ディスクサイズ (GB)</label>
-        <input
-          type="number"
-          value={form.diskSize}
-          onChange={(e) => setForm({ ...form, diskSize: Number(e.target.value) })}
-        />
-      </div>
-
-      <div className="field">
-        <label>ネットワークブリッジ</label>
-        <input
-          type="text"
-          value={form.bridge}
-          onChange={(e) => setForm({ ...form, bridge: e.target.value })}
-        />
-      </div>
-      <div className="field">
-        <label>IP 設定（"dhcp" または "ip=1.2.3.4/24,gw=1.2.3.1"）</label>
-        <input
-          type="text"
-          value={form.ipConfig}
-          onChange={(e) => setForm({ ...form, ipConfig: e.target.value })}
-        />
-      </div>
-
-      <div className="field">
-        <label>root パスワード (任意・5文字以上)</label>
-        <input
-          type="password"
-          value={form.password ?? ""}
-          onChange={(e) => setForm({ ...form, password: e.target.value || undefined })}
-        />
-      </div>
-      <div className="field">
-        <label>SSH 公開鍵 (任意)</label>
-        <textarea
-          value={form.sshPublicKey ?? ""}
-          rows={2}
-          onChange={(e) => setForm({ ...form, sshPublicKey: e.target.value || undefined })}
-        />
-      </div>
 
       <label className="checkbox">
         <input
           type="checkbox"
-          checked={form.unprivileged}
-          onChange={(e) => setForm({ ...form, unprivileged: e.target.checked })}
+          checked={!full}
+          onChange={(e) => setFull(!e.target.checked)}
         />
-        unprivileged コンテナにする
+        リンククローン（既定。ストレージが非対応の場合のみ OFF にしてフルクローン）
       </label>
       <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={form.start}
-          onChange={(e) => setForm({ ...form, start: e.target.checked })}
-        />
-        作成後に起動
+        <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} />
+        クローン完了後に起動
       </label>
 
-      <button className="primary" disabled={creating} onClick={submit}>
-        {creating ? "作成中…" : "作成"}
+      <button className="primary" disabled={busy} onClick={runClone}>
+        {busy && !cloneResult ? "クローン中…" : "クローン実行"}
       </button>
+
+      {cloneResult && (
+        <details className="card-inner" open style={{ marginTop: "1rem" }}>
+          <summary>
+            <strong>
+              ステップ 2: inventory（servers.local.yml）に登録
+            </strong>{" "}
+            <span className="muted">
+              [{cloneResult.kind}] vmid={cloneResult.vmid}
+            </span>
+          </summary>
+
+          <p className="muted">
+            SSH ホスト欄にはクローン直後の DHCP IP を自動入力しました。
+            この時点ではゲスト内でまだ <code>tailscale up</code> が走っていないため、
+            これは Tailscale IP ではありません。ゲスト内で Tailnet 参加が完了したら、
+            この欄を Tailscale IP に書き換えてから登録するか、登録後に
+            <code> servers.local.yml </code>を直接編集してください。
+          </p>
+          {cloneResult.detectedIp === null && (
+            <p className="error">
+              IP の自動検出に失敗しました（LXC では数秒待って再起動、VM では
+              qemu-guest-agent が必要）。SSH ホストは手動で入力してください。
+            </p>
+          )}
+
+          <div className="field">
+            <label>サーバ名（inventory の name）</label>
+            <input type="text" value={invName} onChange={(e) => setInvName(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>SSH ホスト（自動検出 IP を仮で記入。Tailscale IP に書き換え推奨）</label>
+            <input type="text" value={invHost} onChange={(e) => setInvHost(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>SSH ポート</label>
+            <input
+              type="number"
+              value={invPort}
+              onChange={(e) => setInvPort(Number(e.target.value) || 22)}
+            />
+          </div>
+          <div className="field">
+            <label>SSH ユーザ（テンプレートに焼いた一般ユーザ）</label>
+            <input type="text" value={invUser} onChange={(e) => setInvUser(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>SSH パスワード</label>
+            <input
+              type="password"
+              value={invPassword}
+              onChange={(e) => setInvPassword(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label>アプリポート（任意）</label>
+            <input
+              type="number"
+              value={invAppPort}
+              onChange={(e) =>
+                setInvAppPort(e.target.value === "" ? "" : Number(e.target.value))
+              }
+            />
+          </div>
+          <div className="field">
+            <label>ベースラインスナップショット名</label>
+            <input
+              type="text"
+              value={invBaseline}
+              onChange={(e) => setInvBaseline(e.target.value)}
+            />
+          </div>
+
+          <button className="primary" disabled={busy} onClick={registerInInventory}>
+            {busy ? "登録中…" : "inventory に登録"}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setCloneResult(null)}
+            style={{ marginLeft: "0.4rem" }}
+          >
+            キャンセル
+          </button>
+        </details>
+      )}
+
       {error && <p className="error">{error}</p>}
     </details>
+  );
+}
+
+function RawTemplateDownload({ node }: { node: string }) {
+  const [storages, setStorages] = useState<PveStorage[]>([]);
+  const [storage, setStorage] = useState<string>("");
+  useEffect(() => {
+    api
+      .listPveStorage(node)
+      .then((s) => {
+        setStorages(s);
+        const vztmpl = s.filter((x) => contentsOf(x).includes("vztmpl"));
+        if (vztmpl[0]) setStorage(vztmpl[0].storage);
+      })
+      .catch(() => {});
+  }, [node]);
+  const vztmplStorages = storages.filter((s) => contentsOf(s).includes("vztmpl"));
+  return (
+    <>
+      <div className="field">
+        <label>保存先ストレージ（vztmpl 対応）</label>
+        <select value={storage} onChange={(e) => setStorage(e.target.value)}>
+          <option value="">— ストレージを選択 —</option>
+          {vztmplStorages.map((s) => (
+            <option key={s.storage} value={s.storage}>
+              {s.storage}
+            </option>
+          ))}
+        </select>
+      </div>
+      {storage && <DownloadTemplatePanel node={node} storage={storage} onDownloaded={() => {}} />}
+    </>
   );
 }
 

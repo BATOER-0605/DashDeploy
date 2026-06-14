@@ -2,10 +2,30 @@ import type { FastifyInstance } from "fastify";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { z } from "zod";
 import { reloadConfig } from "../config.js";
 import { getInventory, reloadInventory } from "../inventory.js";
 import { resetPveClient } from "../services/clients.js";
+
+const serverEntrySchema = z.object({
+  name: z.string().min(1),
+  pveNode: z.string().min(1),
+  vmid: z.number().int().positive(),
+  kind: z.enum(["lxc", "qemu"]),
+  baselineSnapshot: z.string().min(1).default("clean"),
+  appPort: z.number().int().positive().optional(),
+  healthPath: z.string().optional(),
+  ssh: z.object({
+    host: z.string().min(1),
+    port: z.number().int().positive().default(22),
+    user: z.string().min(1),
+    auth: z.enum(["password", "key"]),
+    password: z.string().optional(),
+    privateKeyPath: z.string().optional(),
+    passphrase: z.string().optional(),
+  }),
+});
 
 const ENV_PATH = resolve(".env");
 const SERVERS_LOCAL = resolve("config/servers.local.yml");
@@ -98,6 +118,47 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
     }
     await writeFile(SERVERS_LOCAL, body.yaml, { mode: 0o600 });
     return { ok: true };
+  });
+
+  // Append a new structured server entry to servers.local.yml. Used by the
+  // clone flow to register the newly created guest without hand-editing YAML.
+  app.post("/api/settings/servers/entry", async (req, reply) => {
+    const parsed = serverEntrySchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "invalid request", issues: parsed.error.issues };
+    }
+    const entry = parsed.data;
+    if (entry.ssh.auth === "password" && !entry.ssh.password) {
+      reply.code(400);
+      return { error: "ssh.password is required when auth=password" };
+    }
+    if (entry.ssh.auth === "key" && !entry.ssh.privateKeyPath) {
+      reply.code(400);
+      return { error: "ssh.privateKeyPath is required when auth=key" };
+    }
+    // Seed servers.local.yml from the sample on first use.
+    const sourcePath = existsSync(SERVERS_LOCAL) ? SERVERS_LOCAL : SERVERS_SAMPLE;
+    const raw = existsSync(sourcePath) ? await readFile(sourcePath, "utf8") : "";
+    let parsedYaml: { servers?: unknown[]; warmTargets?: string[] } = {};
+    if (raw.trim()) {
+      try {
+        parsedYaml = parseYaml(raw) ?? {};
+      } catch (err) {
+        reply.code(500);
+        return { error: `existing YAML parse error: ${(err as Error).message}` };
+      }
+    }
+    const servers = Array.isArray(parsedYaml.servers) ? parsedYaml.servers : [];
+    if (servers.some((s) => (s as { name?: string }).name === entry.name)) {
+      reply.code(409);
+      return { error: `server name already exists: ${entry.name}` };
+    }
+    servers.push(entry);
+    parsedYaml.servers = servers;
+    await writeFile(SERVERS_LOCAL, stringifyYaml(parsedYaml), { mode: 0o600 });
+    reloadInventory();
+    return { ok: true, name: entry.name };
   });
 
   // --- Reload caches so changes take effect without a process restart ---
